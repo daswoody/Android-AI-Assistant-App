@@ -1,0 +1,39 @@
+{
+  "card_type": "weather",
+  "layout_version": 1,
+  "root": {
+    "component": "column",
+    "children": [
+      {
+        "component": "row",
+        "align": "space_between",
+        "children": [
+          {
+            "component": "column",
+            "weight": 1,
+            "children": [
+              { "component": "text", "text": "{{data.location}}", "style": "label", "color": "muted" },
+              { "component": "text", "text": "{{data.temperature}}°", "style": "display", "color": "primary" },
+              { "component": "text", "text": "{{data.condition}}", "style": "body" }
+            ]
+          },
+          { "component": "icon", "icon": "{{data.icon}}", "size": 48, "color": "primary" }
+        ]
+      },
+      { "component": "divider" },
+      {
+        "component": "list",
+        "items_path": "data.forecast",
+        "item_template": {
+          "component": "row",
+          "align": "space_between",
+          "children": [
+            { "component": "text", "text": "{{day}}", "style": "body", "weight": 1 },
+            { "component": "icon", "icon": "{{icon}}", "size": 20 },
+            { "component": "text", "text": "{{min}}° / {{max}}°", "style": "body" }
+          ]
+        }
+      }
+    ]
+  }
+}

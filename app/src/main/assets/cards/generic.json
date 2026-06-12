@@ -1,0 +1,11 @@
+{
+  "card_type": "generic",
+  "layout_version": 1,
+  "root": {
+    "component": "column",
+    "children": [
+      { "component": "text", "text": "{{data.headline}}", "style": "title" },
+      { "component": "text", "text": "{{data.body}}", "style": "body" }
+    ]
+  }
+}

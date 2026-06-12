@@ -1,0 +1,131 @@
+# Heim-AI App ↔ Voice-Orchestrator Protokoll (v1)
+
+> **Status:** Dieses Dokument ist der verbindliche Vertrag zwischen der
+> Android-App (Phase 2) und dem Voice-Orchestrator (Mikro-Phase 1.7+).
+> Der Server existiert noch nicht — die App ist gegen genau diese
+> Schnittstelle gebaut, der Orchestrator implementiert sie nach.
+> Die Windows-App (Phase 2.5) nutzt denselben Vertrag.
+
+Basis-URL = vom Nutzer beim App-Start eingegebene Server-URL,
+z. B. `http://192.168.2.105:8200` oder `https://orchestrator.ai.lab`.
+
+Alle Timestamps: UTC, ISO 8601 mit `Z` (Spez. 4.10).
+
+---
+
+## 1. REST-Endpoints
+
+### `GET /v1/health`
+Erreichbarkeits-Check (Server-Auswahl-Screen). Keine Auth.
+
+```json
+{ "status": "ok", "name": "heim-ai-orchestrator", "version": "0.1.0" }
+```
+
+### `POST /v1/auth/login`
+Geräte-Login (Phase 4 ersetzt das Schema ggf. durch echte User-DB —
+der Vertrag bleibt gleich).
+
+Request:
+```json
+{ "username": "...", "password": "...", "device_name": "Pixel 8" }
+```
+Response `200`:
+```json
+{ "token": "<bearer-token>", "user": { "name": "Daniel", "tier": 3 } }
+```
+Fehler: `401` mit `{ "error": "..." }`.
+
+Alle weiteren Aufrufe tragen `Authorization: Bearer <token>`.
+
+### `GET /v1/voices`
+Verfügbare TTS-Stimmen für die Stimmauswahl in den AI-Einstellungen.
+```json
+{ "voices": [ { "id": "xtts-anna", "name": "Anna (XTTS-v2)" } ] }
+```
+
+### `GET /v1/cards/layouts?since_version=N`
+**Card-Layout-Server** (zentrale Karten-Verwaltung, siehe Spez. 4.12).
+Liefert alle Layout-Templates, wenn sich seit `N` etwas geändert hat,
+sonst `{ "version": N, "layouts": [] }`.
+
+```json
+{
+  "version": 7,
+  "layouts": [
+    {
+      "card_type": "weather",
+      "layout_version": 3,
+      "root": { "component": "column", "children": [ ... ] }
+    }
+  ]
+}
+```
+Das Template-Format ist in `docs/CARDS.md` definiert. Die App cacht
+Layouts lokal (Room) und fällt offline auf mitgelieferte Assets zurück.
+
+---
+
+## 2. WebSocket `GET /v1/assistant/stream`
+
+Header: `Authorization: Bearer <token>`. Alle Frames sind JSON-Text.
+Audio ist Base64-kodiertes rohes PCM16 (mono). Client sendet 16 kHz
+(Whisper-Eingang), Server antwortet mit eigener Rate (`sample_rate`-Feld,
+typisch 24000 bei XTTS-v2).
+
+### 2.1 Client → Server
+
+| type | Felder | Bedeutung |
+|---|---|---|
+| `hello` | `mode` (chat\|talk\|assist), `voice_id`, `device{platform,name,app_version}`, `capabilities{audio_in,audio_out,cards}`, `tools[]` | Erste Nachricht nach Connect. `tools` = Manifest der Geräte-Tools (siehe 2.3) |
+| `text_input` | `text` | Texteingabe statt Sprache |
+| `audio_chunk` | `data` (b64 PCM16/16k) | ~100-ms-Mikrofon-Chunk |
+| `audio_end` | – | Nutzer hat Aufnahme beendet (Push-to-Talk losgelassen) |
+| `interrupt` | – | Barge-in: laufende Antwort abbrechen |
+| `tool_result` | `call_id`, `ok` (bool), `result` (JSON) | Ergebnis eines Geräte-Tool-Aufrufs |
+
+### 2.2 Server → Client
+
+| type | Felder | Bedeutung |
+|---|---|---|
+| `session` | `session_id` | Optional, nach hello |
+| `transcript` | `text`, `final` (bool) | STT-Zwischenstand / final |
+| `assistant_text` | `text`, `final` (bool) | Antwort-Text; Deltas mit `final:false`, Abschluss `final:true` (bei `final:true` darf `text` der Volltext sein, sonst leer) |
+| `audio_chunk` | `data` (b64 PCM16), `sample_rate` | TTS-Audio-Stream (Filler über Piper zuerst, dann XTTS — für die App transparent) |
+| `audio_end` | – | TTS-Stream zu Ende |
+| `card` | `card{type,version,title?,data}` | Karten-Push parallel zur Sprachantwort |
+| `tool_call` | `call_id`, `name`, `arguments` (JSON) | LLM will ein Geräte-Tool ausführen |
+| `done` | – | Turn abgeschlossen. **Wichtig:** Kam in diesem Turn kein `audio_chunk`, liest die App den Text per On-Device-TTS vor (Fallback) |
+| `error` | `message` | Fehler |
+
+### 2.3 Geräte-Tool-Bridge
+
+Die App meldet im `hello` ihre Tools an (Name, Beschreibung, Parameter,
+`sensitive`-Flag). Der Orchestrator registriert sie pro Verbindung als
+session-gebundene Tools beim LLM (MCP-Pattern: das Gerät ist ein
+temporärer Tool-Server). Aktuelle Tools der Android-App:
+
+`open_app`, `navigate_to`, `dial_number`, `compose_email`,
+`create_contact`, `web_search`, `set_alarm`, `read_notifications`
+
+`read_notifications` liefert die Rohdaten der aktuellen Benachrichtigungen
+— die Zusammenfassung formuliert das LLM und schickt sie idealerweise
+zusätzlich als Karte `notifications_summary`.
+
+Sensible Tools bestätigt der Nutzer auf dem Gerät (Tiered Security,
+Spez. 4.4); bei Ablehnung kommt `tool_result` mit `ok:false`.
+
+### 2.4 Beispiel-Flow (Wake Word → Antwort mit Karte)
+
+```
+C→S  hello {mode:"assist", tools:[...]}
+C→S  audio_chunk … audio_chunk
+C→S  audio_end
+S→C  transcript {"text":"wie wird das wetter morgen","final":true}
+S→C  audio_chunk (Filler: "Ich schaue eben nach")
+S→C  tool_call {"call_id":"1","name":"…"} (serverseitige Tools laufen intern)
+S→C  assistant_text {"text":"Morgen wird es …","final":false} …
+S→C  card {"card":{"type":"weather","data":{…}}}
+S→C  audio_chunk … audio_end
+S→C  done
+```
