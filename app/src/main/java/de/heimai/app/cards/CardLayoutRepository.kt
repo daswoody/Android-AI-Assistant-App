@@ -16,7 +16,7 @@ import kotlinx.serialization.json.Json
 /**
  * Zentrale Karten-Verwaltung ("Karten wie Skills"):
  *
- * 1. Built-in-Templates aus assets/cards/*.json (Fallback, offline-fähig)
+ * 1. Built-in-Templates aus assets/cards (JSON-Dateien; Fallback, offline-fähig)
  * 2. Lokaler Cache in Room (zuletzt vom Server gezogene Layouts)
  * 3. Sync gegen den Card-Layout-Server: GET /v1/cards/layouts
  *    (Teil des Orchestrators, siehe docs/PROTOCOL.md — neue Karten-Layouts
