@@ -18,6 +18,18 @@ android {
         versionName = "0.1.0"
     }
 
+    // Eingecheckter Debug-Keystore: sorgt dafür, dass jede CI-APK dieselbe
+    // Signatur trägt und Updates ohne Deinstallation installierbar sind.
+    // (Debug-Key, kein Geheimnis — Release-Signing ist ein offener Punkt.)
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
