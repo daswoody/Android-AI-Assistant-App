@@ -142,6 +142,9 @@ class AssistantSession(
                         put("data", Base64.encodeToString(chunk, Base64.NO_WRAP))
                     })
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // Normales Ende via stopListening() — kein Fehler
+                throw e
             } catch (e: Exception) {
                 fail("Mikrofon-Fehler: ${e.message}")
             }

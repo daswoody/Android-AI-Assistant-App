@@ -58,6 +58,8 @@ class DeviceToolExecutor(
                 "read_notifications" -> readNotifications()
                 else -> error("Tool nicht implementiert: $name")
             }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             error("Ausführung fehlgeschlagen: ${e.message}")
         }
