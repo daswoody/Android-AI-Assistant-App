@@ -22,8 +22,17 @@ data class AppSettings(
     val darkMode: String = "system", // system | dark | light
     val voiceId: String = "",
     val wakeWordEnabled: Boolean = false,
+    /** Built-in-Keyword-Name oder "CUSTOM" für eine importierte .ppn-Datei */
     val wakeWordKeyword: String = "COMPUTER",
     val picovoiceAccessKey: String = "",
+    /** Vom Orchestrator über GET /v1/config bezogener Key (zentrale Verwaltung) */
+    val serverWakeWordKey: String = "",
+    /** Pfad zur importierten eigenen Wake-Word-Datei (.ppn) */
+    val customWakeWordPath: String = "",
+    /** Pfad zum optionalen Sprachmodell (.pv, nötig für z. B. deutsche Wake Words) */
+    val customWakeWordModelPath: String = "",
+    /** Realtime Talk: Stille-Dauer in ms, nach der automatisch gesendet wird */
+    val talkSilenceMs: Int = 900,
     /**
      * Rechte-Modus: true = bei entsperrtem Gerät keine separate Bestätigung
      * für sensible Tool-Aktionen; false = immer bestätigen.
@@ -34,6 +43,9 @@ data class AppSettings(
 ) {
     val isConfigured: Boolean get() = serverUrl.isNotBlank()
     val isLoggedIn: Boolean get() = authToken.isNotBlank()
+
+    /** Lokal eingetragener Key hat Vorrang, sonst der zentral vom Server bezogene. */
+    val effectiveWakeWordKey: String get() = picovoiceAccessKey.ifBlank { serverWakeWordKey }
 }
 
 class SettingsRepository(private val context: Context) {
@@ -49,6 +61,10 @@ class SettingsRepository(private val context: Context) {
         val WAKE_WORD_ENABLED = booleanPreferencesKey("wake_word_enabled")
         val WAKE_WORD_KEYWORD = stringPreferencesKey("wake_word_keyword")
         val PICOVOICE_KEY = stringPreferencesKey("picovoice_access_key")
+        val SERVER_WAKE_KEY = stringPreferencesKey("server_wake_word_key")
+        val CUSTOM_PPN_PATH = stringPreferencesKey("custom_wake_word_path")
+        val CUSTOM_PV_PATH = stringPreferencesKey("custom_wake_word_model_path")
+        val TALK_SILENCE_MS = intPreferencesKey("talk_silence_ms")
         val RELAXED_SECURITY = booleanPreferencesKey("relaxed_security")
         val TTS_FALLBACK = booleanPreferencesKey("tts_fallback")
         val CARD_LAYOUTS_VERSION = intPreferencesKey("card_layouts_version")
@@ -66,6 +82,10 @@ class SettingsRepository(private val context: Context) {
             wakeWordEnabled = p[Keys.WAKE_WORD_ENABLED] ?: false,
             wakeWordKeyword = p[Keys.WAKE_WORD_KEYWORD] ?: "COMPUTER",
             picovoiceAccessKey = p[Keys.PICOVOICE_KEY] ?: "",
+            serverWakeWordKey = p[Keys.SERVER_WAKE_KEY] ?: "",
+            customWakeWordPath = p[Keys.CUSTOM_PPN_PATH] ?: "",
+            customWakeWordModelPath = p[Keys.CUSTOM_PV_PATH] ?: "",
+            talkSilenceMs = p[Keys.TALK_SILENCE_MS] ?: 900,
             relaxedSecurity = p[Keys.RELAXED_SECURITY] ?: false,
             ttsFallbackEnabled = p[Keys.TTS_FALLBACK] ?: true,
             cardLayoutsVersion = p[Keys.CARD_LAYOUTS_VERSION] ?: 0,
@@ -96,6 +116,10 @@ class SettingsRepository(private val context: Context) {
     suspend fun setWakeWordEnabled(enabled: Boolean) = edit { it[Keys.WAKE_WORD_ENABLED] = enabled }
     suspend fun setWakeWordKeyword(keyword: String) = edit { it[Keys.WAKE_WORD_KEYWORD] = keyword }
     suspend fun setPicovoiceKey(key: String) = edit { it[Keys.PICOVOICE_KEY] = key }
+    suspend fun setServerWakeWordKey(key: String) = edit { it[Keys.SERVER_WAKE_KEY] = key }
+    suspend fun setCustomWakeWordPath(path: String) = edit { it[Keys.CUSTOM_PPN_PATH] = path }
+    suspend fun setCustomWakeWordModelPath(path: String) = edit { it[Keys.CUSTOM_PV_PATH] = path }
+    suspend fun setTalkSilenceMs(ms: Int) = edit { it[Keys.TALK_SILENCE_MS] = ms.coerceIn(300, 5000) }
     suspend fun setRelaxedSecurity(relaxed: Boolean) = edit { it[Keys.RELAXED_SECURITY] = relaxed }
     suspend fun setTtsFallback(enabled: Boolean) = edit { it[Keys.TTS_FALLBACK] = enabled }
     suspend fun setCardLayoutsVersion(v: Int) = edit { it[Keys.CARD_LAYOUTS_VERSION] = v }

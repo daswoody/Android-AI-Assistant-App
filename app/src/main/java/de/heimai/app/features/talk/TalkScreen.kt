@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import de.heimai.app.HeimAiApp
 import de.heimai.app.core.network.ConnectionState
+import de.heimai.app.core.settings.AppSettings
 import de.heimai.app.features.chat.ChatViewModel
 import de.heimai.app.ui.components.MessageItem
 import de.heimai.app.ui.components.ToolConfirmationDialog
@@ -62,6 +63,7 @@ fun TalkScreen(onBack: () -> Unit) {
     )
     val container = HeimAiApp.from(context.applicationContext as Application).container
     val state by viewModel.session.state.collectAsState()
+    val settings by container.settings.settings.collectAsState(initial = AppSettings())
     val listState = rememberLazyListState()
 
     var micGranted by remember {
@@ -76,10 +78,10 @@ fun TalkScreen(onBack: () -> Unit) {
     LaunchedEffect(Unit) {
         if (!micGranted) micLauncher.launch(Manifest.permission.RECORD_AUDIO)
     }
-    // Dauer-Zuhören, sobald verbunden und Berechtigung da
+    // Realtime: dauerhaft zuhören, automatisch senden nach Sprechpause (talkSilenceMs)
     LaunchedEffect(state.connection, micGranted) {
         if (state.connection == ConnectionState.CONNECTED && micGranted && !state.listening) {
-            viewModel.session.startListening()
+            viewModel.session.startListening(continuous = true, silenceMs = settings.talkSilenceMs)
         }
     }
     LaunchedEffect(state.messages.size) {
@@ -116,6 +118,7 @@ fun TalkScreen(onBack: () -> Unit) {
                 when {
                     state.connection == ConnectionState.ERROR -> state.error ?: "Verbindungsfehler"
                     state.connection != ConnectionState.CONNECTED -> "Verbinde…"
+                    state.speaking -> "Antwort läuft — sprich zum Unterbrechen"
                     state.listening && state.partialTranscript.isNotBlank() -> state.partialTranscript
                     state.listening -> "Ich höre zu — sprich einfach los"
                     else -> "Mikrofon pausiert"
@@ -124,11 +127,18 @@ fun TalkScreen(onBack: () -> Unit) {
                 color = if (state.connection == ConnectionState.ERROR)
                     MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
             )
+            Text(
+                "Automatisch senden nach ${settings.talkSilenceMs} ms Stille · in den AI-Einstellungen anpassbar",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             Spacer(Modifier.height(16.dp))
             FilledIconButton(
                 onClick = {
                     if (state.listening) viewModel.session.stopListening()
-                    else if (micGranted) viewModel.session.startListening()
+                    else if (micGranted) viewModel.session.startListening(
+                        continuous = true, silenceMs = settings.talkSilenceMs
+                    )
                     else micLauncher.launch(Manifest.permission.RECORD_AUDIO)
                 },
                 modifier = Modifier.size(84.dp),

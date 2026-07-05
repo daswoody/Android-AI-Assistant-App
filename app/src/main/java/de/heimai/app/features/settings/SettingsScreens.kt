@@ -36,6 +36,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -58,8 +59,10 @@ import de.heimai.app.core.network.Voice
 import de.heimai.app.core.settings.AppSettings
 import de.heimai.app.ui.theme.THEMES
 import de.heimai.app.wakeword.PorcupineEngine
+import de.heimai.app.wakeword.WakeWordImport
 import de.heimai.app.wakeword.WakeWordService
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 @Composable
 private fun container(): AppContainer =
@@ -209,12 +212,44 @@ fun AiSettingsScreen(onBack: () -> Unit) {
         runCatching { container.api.voices() }
             .onSuccess { voices = it.voices }
             .onFailure { voicesError = "Stimmen nicht abrufbar (Server offline?)" }
+        // Zentrale Client-Config (u. a. Wake-Word-AccessKey) vom Orchestrator holen
+        container.api.syncClientConfig()
     }
 
     val micLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) {
             scope.launch { container.settings.setWakeWordEnabled(true) }
             WakeWordService.start(context)
+        }
+    }
+
+    // Phrase wechseln: Setting schreiben, DANN (falls aktiv) Dienst mit neuer
+    // Konfiguration neu starten — der Service baut die Engine bei jedem Start frisch auf.
+    fun selectKeyword(kw: String) {
+        scope.launch {
+            container.settings.setWakeWordKeyword(kw)
+            if (settings.wakeWordEnabled) WakeWordService.start(context)
+        }
+    }
+
+    // Import eigener Wake-Word-Dateien (.ppn Keyword, optional .pv Sprachmodell)
+    val ppnLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            val path = WakeWordImport.copyToStorage(context, uri, "custom.ppn")
+            if (path != null) scope.launch {
+                container.settings.setCustomWakeWordPath(path)
+                container.settings.setWakeWordKeyword(PorcupineEngine.CUSTOM)
+                if (settings.wakeWordEnabled) WakeWordService.start(context)
+            }
+        }
+    }
+    val pvLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            val path = WakeWordImport.copyToStorage(context, uri, "custom.pv")
+            if (path != null) scope.launch {
+                container.settings.setCustomWakeWordModelPath(path)
+                if (settings.wakeWordEnabled) WakeWordService.start(context)
+            }
         }
     }
 
@@ -244,8 +279,30 @@ fun AiSettingsScreen(onBack: () -> Unit) {
         }
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
 
+        // --- Realtime Talk ---
+        Text("Realtime Talk", style = MaterialTheme.typography.titleSmall)
+        Text(
+            "Automatisch senden nach dieser Sprechpause: ${settings.talkSilenceMs} ms",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Text(
+            "Kürzer = reaktionsschneller, schneidet aber bei Denkpausen eher ab. " +
+                "Länger = mehr Zeit zwischen Sätzen.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Slider(
+            value = settings.talkSilenceMs.toFloat(),
+            onValueChange = { scope.launch { container.settings.setTalkSilenceMs(it.roundToInt()) } },
+            valueRange = 300f..3000f,
+            steps = 26, // 100-ms-Raster zwischen 300 und 3000
+            modifier = Modifier.fillMaxWidth(),
+        )
+        HorizontalDivider(Modifier.padding(vertical = 12.dp))
+
         // --- Wake Word ---
         Text("Wake Word", style = MaterialTheme.typography.titleSmall)
+        val wakeKey = settings.effectiveWakeWordKey
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("Wake-Word-Erkennung")
@@ -257,9 +314,9 @@ fun AiSettingsScreen(onBack: () -> Unit) {
             }
             Switch(
                 checked = settings.wakeWordEnabled,
+                enabled = wakeKey.isNotBlank(),
                 onCheckedChange = { enable ->
                     if (enable) {
-                        if (settings.picovoiceAccessKey.isBlank()) return@Switch
                         val granted = context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
                             PackageManager.PERMISSION_GRANTED
                         if (granted) {
@@ -275,6 +332,68 @@ fun AiSettingsScreen(onBack: () -> Unit) {
                 },
             )
         }
+        Text(
+            when {
+                settings.picovoiceAccessKey.isNotBlank() -> "Lizenz-Key: lokal hinterlegt"
+                settings.serverWakeWordKey.isNotBlank() -> "Lizenz-Key: zentral vom Server bereitgestellt ✓"
+                else -> "Kein Lizenz-Key verfügbar. Der Server stellt ihn normalerweise " +
+                    "bereit (GET /v1/config); optional unten selbst eintragen."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = if (wakeKey.isBlank()) MaterialTheme.colorScheme.error
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+
+        Text("Wake-Word-Phrase", style = MaterialTheme.typography.labelMedium)
+        PorcupineEngine.KEYWORDS.forEach { keyword ->
+            Row(
+                Modifier.fillMaxWidth().clickable { selectKeyword(keyword) }.padding(vertical = 0.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(
+                    selected = settings.wakeWordKeyword == keyword,
+                    onClick = { selectKeyword(keyword) },
+                )
+                Text(keyword.lowercase().replaceFirstChar { it.uppercase() })
+            }
+        }
+        // Eigenes Wake Word (.ppn)
+        Row(
+            Modifier.fillMaxWidth().clickable {
+                if (settings.customWakeWordPath.isNotBlank()) selectKeyword(PorcupineEngine.CUSTOM)
+                else ppnLauncher.launch(arrayOf("*/*"))
+            }.padding(vertical = 0.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            RadioButton(
+                selected = settings.wakeWordKeyword == PorcupineEngine.CUSTOM,
+                enabled = settings.customWakeWordPath.isNotBlank(),
+                onClick = { selectKeyword(PorcupineEngine.CUSTOM) },
+            )
+            Text(
+                if (settings.customWakeWordPath.isNotBlank()) "Eigenes Wake Word (importiert)"
+                else "Eigenes Wake Word …"
+            )
+        }
+        Text(
+            "Eigene Phrasen werden auf console.picovoice.ai als .ppn-Datei erstellt " +
+                "(für Deutsch zusätzlich das passende .pv-Sprachmodell importieren).",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+            OutlinedButton(
+                onClick = { ppnLauncher.launch(arrayOf("*/*")) },
+                modifier = Modifier.weight(1f).padding(end = 4.dp),
+            ) { Text(if (settings.customWakeWordPath.isBlank()) ".ppn wählen" else ".ppn ersetzen") }
+            OutlinedButton(
+                onClick = { pvLauncher.launch(arrayOf("*/*")) },
+                modifier = Modifier.weight(1f).padding(start = 4.dp),
+            ) { Text(if (settings.customWakeWordModelPath.isBlank()) ".pv (Sprache)" else ".pv ersetzen") }
+        }
+
+        // Optionaler eigener AccessKey (Override des zentralen Keys)
         var keyInput by remember { mutableStateOf<String?>(null) }
         OutlinedTextField(
             value = keyInput ?: settings.picovoiceAccessKey,
@@ -282,25 +401,10 @@ fun AiSettingsScreen(onBack: () -> Unit) {
                 keyInput = it
                 scope.launch { container.settings.setPicovoiceKey(it.trim()) }
             },
-            label = { Text("Picovoice AccessKey (console.picovoice.ai, kostenlos)") },
+            label = { Text("Eigener Picovoice AccessKey (optional)") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
         )
-        Text("Wake-Word-Phrase", style = MaterialTheme.typography.labelMedium)
-        PorcupineEngine.KEYWORDS.forEach { keyword ->
-            Row(
-                Modifier.fillMaxWidth().clickable {
-                    scope.launch { container.settings.setWakeWordKeyword(keyword) }
-                }.padding(vertical = 0.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                RadioButton(
-                    selected = settings.wakeWordKeyword == keyword,
-                    onClick = { scope.launch { container.settings.setWakeWordKeyword(keyword) } },
-                )
-                Text(keyword.lowercase().replaceFirstChar { it.uppercase() })
-            }
-        }
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
 
         // --- Rechte ---

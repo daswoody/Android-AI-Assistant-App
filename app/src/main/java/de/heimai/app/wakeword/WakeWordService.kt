@@ -37,6 +37,10 @@ import de.heimai.app.assistant.HeimVoiceInteractionService
 class WakeWordService : Service() {
 
     private var engine: WakeWordEngine? = null
+    /** true, solange das Assistant-Overlay das Mikrofon nutzt (Erkennung pausiert). */
+    private var paused = false
+    /** Signatur der aktuell gebauten Engine (Key|Keyword|ppn|pv) — verhindert unnötigen Neuaufbau. */
+    private var builtSignature: String? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -48,24 +52,48 @@ class WakeWordService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startInForeground()
         val settings = HeimAiApp.from(application).container.settings.currentBlocking()
-        if (!settings.wakeWordEnabled || settings.picovoiceAccessKey.isBlank() || !hasMicPermission()) {
+        val accessKey = settings.effectiveWakeWordKey
+        val useCustom = settings.wakeWordKeyword == PorcupineEngine.CUSTOM &&
+            settings.customWakeWordPath.isNotBlank()
+        val configReady = if (settings.wakeWordKeyword == PorcupineEngine.CUSTOM) useCustom else true
+        if (!settings.wakeWordEnabled || accessKey.isBlank() || !configReady || !hasMicPermission()) {
             stopSelf()
             return START_NOT_STICKY
         }
-        if (engine == null) {
-            try {
-                engine = PorcupineEngine(
-                    context = this,
-                    accessKey = settings.picovoiceAccessKey,
-                    keyword = settings.wakeWordKeyword,
-                    onDetected = ::onWakeWord,
-                )
-                engine?.start()
-            } catch (e: Exception) {
-                Log.e(TAG, "Wake-Word-Engine konnte nicht starten", e)
-                stopSelf()
-                return START_NOT_STICKY
-            }
+        val signature = listOf(
+            accessKey,
+            settings.wakeWordKeyword,
+            if (useCustom) settings.customWakeWordPath else "",
+            if (useCustom) settings.customWakeWordModelPath else "",
+        ).joinToString("|")
+
+        // Unveränderte Konfiguration + bereits gebaute Engine: NICHTS tun.
+        // Ein beiläufiger Neustart (z. B. MainActivity.onCreate bei Rotation) darf
+        // eine vom Overlay gewollte Pause nicht aufheben (sonst Mikrofon-Konflikt).
+        if (engine != null && signature == builtSignature) {
+            return START_STICKY
+        }
+
+        // Konfiguration neu/geändert: Engine mit frischen Einstellungen aufbauen.
+        engine?.release()
+        engine = null
+        try {
+            engine = PorcupineEngine(
+                context = this,
+                accessKey = accessKey,
+                keyword = settings.wakeWordKeyword,
+                customKeywordPath = if (useCustom) settings.customWakeWordPath else "",
+                customModelPath = if (useCustom) settings.customWakeWordModelPath else "",
+                onDetected = ::onWakeWord,
+            )
+            builtSignature = signature
+            // Nur starten, wenn nicht gerade vom Overlay pausiert (Mikrofon frei halten).
+            if (!paused) engine?.start()
+        } catch (e: Exception) {
+            builtSignature = null
+            Log.e(TAG, "Wake-Word-Engine konnte nicht starten", e)
+            stopSelf()
+            return START_NOT_STICKY
         }
         return START_STICKY
     }
@@ -79,10 +107,12 @@ class WakeWordService : Service() {
 
     /** Erkennung pausieren, solange das Assistant-Popup selbst das Mikrofon braucht. */
     fun pauseDetection() {
+        paused = true
         engine?.stop()
     }
 
     fun resumeDetection() {
+        paused = false
         runCatching { engine?.start() }
     }
 

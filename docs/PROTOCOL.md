@@ -44,6 +44,20 @@ Verfügbare TTS-Stimmen für die Stimmauswahl in den AI-Einstellungen.
 { "voices": [ { "id": "xtts-anna", "name": "Anna (XTTS-v2)" } ] }
 ```
 
+### `GET /v1/config`
+**Zentrale Client-Konfiguration.** Damit Endnutzer keine eigenen Keys
+verwalten müssen, liefert der Orchestrator hier u. a. den Picovoice-
+AccessKey für das Wake Word aus (Porcupine rechnet lokal, der Key ist
+aber Picovoices Lizenzmechanismus). Die App übernimmt ihn beim App-Start
+und nach dem Login; ein lokal eingetragener Key hat Vorrang.
+
+```json
+{ "wake_word": { "access_key": "pv-xxxxxxxxxxxx" } }
+```
+Felder optional — fehlt `wake_word.access_key`, bleibt der zuletzt
+bekannte Wert erhalten. Server ohne diesen Endpoint sind unkritisch
+(die App fängt den Fehler ab).
+
 ### `GET /v1/cards/layouts?since_version=N`
 **Card-Layout-Server** (zentrale Karten-Verwaltung, siehe Spez. 4.12).
 Liefert alle Layout-Templates, wenn sich seit `N` etwas geändert hat,
@@ -80,8 +94,8 @@ typisch 24000 bei XTTS-v2).
 | `hello` | `mode` (chat\|talk\|assist), `voice_id`, `device{platform,name,app_version}`, `capabilities{audio_in,audio_out,cards}`, `tools[]` | Erste Nachricht nach Connect. `tools` = Manifest der Geräte-Tools (siehe 2.3) |
 | `text_input` | `text` | Texteingabe statt Sprache |
 | `audio_chunk` | `data` (b64 PCM16/16k) | ~100-ms-Mikrofon-Chunk |
-| `audio_end` | – | Nutzer hat Aufnahme beendet (Push-to-Talk losgelassen) |
-| `interrupt` | – | Barge-in: laufende Antwort abbrechen |
+| `audio_end` | – | Äußerung beendet. Push-to-Talk: beim Loslassen. **Realtime Talk:** die App erkennt Sprechpausen client-seitig (VAD) und sendet `audio_end` automatisch nach einer einstellbaren Stille (Default 900 ms); danach bleibt der Socket offen für die nächste Äußerung |
+| `interrupt` | – | Barge-in: laufende Antwort abbrechen (im Realtime Talk automatisch, wenn der Nutzer während der Antwort spricht) |
 | `tool_result` | `call_id`, `ok` (bool), `result` (JSON) | Ergebnis eines Geräte-Tool-Aufrufs |
 
 ### 2.2 Server → Client
@@ -95,7 +109,7 @@ typisch 24000 bei XTTS-v2).
 | `audio_end` | – | TTS-Stream zu Ende |
 | `card` | `card{type,version,title?,data}` | Karten-Push parallel zur Sprachantwort |
 | `tool_call` | `call_id`, `name`, `arguments` (JSON) | LLM will ein Geräte-Tool ausführen |
-| `done` | – | Turn abgeschlossen. **Wichtig:** Kam in diesem Turn kein `audio_chunk`, liest die App den Text per On-Device-TTS vor (Fallback) |
+| `done` | – | Turn abgeschlossen. **TTS-Fallback-Regel:** Die App liest den Antworttext nur dann per On-Device-TTS vor, wenn die Anfrage per **Audio** (Mikrofon) kam UND der Server in diesem Turn **kein** `audio_chunk` geliefert hat. Bei Texteingaben wird nie vorgelesen (der Server antwortet dort bewusst ohne Audio) |
 | `error` | `message` | Fehler |
 
 ### 2.3 Geräte-Tool-Bridge

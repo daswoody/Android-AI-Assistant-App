@@ -43,11 +43,14 @@ class MainActivity : ComponentActivity() {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
 
-        // Karten-Layouts vom Server aktualisieren + Wake Word ggf. starten
+        // Karten-Layouts + zentrale Client-Config (Wake-Word-Key) vom Server aktualisieren
         lifecycleScope.launch {
-            if (initial.isLoggedIn) container.cardLayouts.sync()
+            if (initial.isLoggedIn) {
+                container.cardLayouts.sync()
+                container.api.syncClientConfig()
+            }
         }
-        if (initial.wakeWordEnabled && initial.picovoiceAccessKey.isNotBlank()) {
+        if (initial.wakeWordEnabled && initial.effectiveWakeWordKey.isNotBlank()) {
             WakeWordService.start(this)
         }
 

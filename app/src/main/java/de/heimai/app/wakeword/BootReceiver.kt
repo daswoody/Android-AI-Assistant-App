@@ -16,7 +16,7 @@ class BootReceiver : BroadcastReceiver() {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
         val app = context.applicationContext as? HeimAiApp ?: return
         val settings = app.container.settings.currentBlocking()
-        if (settings.wakeWordEnabled && settings.picovoiceAccessKey.isNotBlank()) {
+        if (settings.wakeWordEnabled && settings.effectiveWakeWordKey.isNotBlank()) {
             WakeWordService.start(context)
         }
     }

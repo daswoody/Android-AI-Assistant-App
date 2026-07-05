@@ -262,8 +262,8 @@ Begründung — die Kern-Anforderungen der App sind tief im Android-System veran
 
 **Wake-Word-Engine: Picovoice Porcupine** (entschieden, war offener Punkt):
 - Kostenlos für Personal Use, sehr geringer CPU-/Akku-Verbrauch, stabile Android-Integration (Maven Central: `ai.picovoice:porcupine-android`)
-- Benötigt einen **AccessKey** (console.picovoice.ai), der in den App-Einstellungen hinterlegt wird
-- Built-in-Keywords wählbar (Computer, Jarvis, Porcupine, Bumblebee, Terminator); **eigene Phrase** erfordert ein über die Picovoice-Konsole trainiertes `.ppn`-Modell
+- Benötigt einen **AccessKey** (console.picovoice.ai). Porcupine rechnet zwar 100 % lokal (kein Audio verlässt das Gerät), der Key ist aber Picovoices Lizenz-/Attestierungsmechanismus — die Engine startet ohne gültigen Key nicht. **Konsequenz für die zentrale Verwaltung:** Der Key wird vom Orchestrator ausgeliefert (`GET /v1/config` → `wake_word.access_key`); Endnutzer müssen nichts eintragen. Ein lokal in den Einstellungen hinterlegter Key hat Vorrang (Override für Entwickler)
+- Built-in-Keywords wählbar (Computer, Jarvis, Porcupine, Bumblebee, Terminator); **eigene Phrase** über die Picovoice-Konsole als `.ppn` erstellt und in den App-Einstellungen importierbar (für Deutsch zusätzlich das `.pv`-Sprachmodell); die Datei wird in den App-internen Speicher kopiert, da Porcupine einen Dateipfad braucht
 - Die App kapselt die Engine hinter einem `WakeWordEngine`-Interface, damit später openWakeWord/microWakeWord (ESP32-Parität) nachgerüstet werden kann
 
 **App-interne Architektur-Eckpunkte:** Single-Module Kotlin/Compose-Projekt, manueller DI-Container (bewusst kein Hilt — weniger Build-Magie), Room für Verlauf + Layout-Cache, DataStore für Settings, OkHttp für REST + WebSocket, kotlinx.serialization. APK-Build über GitHub Actions (Debug-Signatur, Sideload-fähig).
@@ -291,14 +291,16 @@ Verbindlicher Vertrag in `docs/PROTOCOL.md` (App-Repo). **Die App ist fertig geb
 - `POST /v1/auth/login` `{username, password, device_name}` → `{token, user:{name, tier}}` (Bearer-Token für alles Weitere)
 - `GET /v1/voices` — Stimmen für die Stimmauswahl
 - `GET /v1/cards/layouts?since_version=N` — Karten-Layouts (4.12)
+- `GET /v1/config` — **zentrale Client-Konfiguration** (u. a. `wake_word.access_key`), damit Endnutzer keine eigenen Keys pflegen müssen (siehe 4.11)
 
 **WebSocket `/v1/assistant/stream`** (JSON-Frames; Audio als Base64-PCM16 — Client sendet 16 kHz für Whisper, Server antwortet mit `sample_rate`-Angabe, typisch 24 kHz XTTS):
 - Client → Server: `hello` (mit Mode chat|talk|assist, voice_id und **Geräte-Tool-Manifest**), `text_input`, `audio_chunk`/`audio_end`, `interrupt` (Barge-in), `tool_result`
 - Server → Client: `transcript` (partial/final), `assistant_text` (Streaming-Deltas + final), `audio_chunk`/`audio_end`, `card`, `tool_call`, `done`, `error`
+- **Realtime Talk (mode=talk):** die App erkennt Sprechpausen client-seitig (VAD) und sendet `audio_end` automatisch nach einstellbarer Stille (Default 900 ms, in den AI-Einstellungen); Barge-in erfolgt automatisch, wenn der Nutzer während der Antwort spricht. Serverseitig kein Sonderfall — der Server sieht nur `audio_chunk`/`audio_end`/`interrupt`.
 
 **Geräte-Tool-Bridge:** App meldet im `hello` ihre Tools an (`open_app`, `navigate_to`, `dial_number`, `compose_email`, `create_contact`, `web_search`, `set_alarm`, `read_notifications`); das LLM ruft sie über `tool_call` auf, die App führt lokal aus und antwortet mit `tool_result`. `read_notifications` liefert Rohdaten — die Zusammenfassung formuliert das LLM (idealerweise zusätzlich als `notifications_summary`-Karte).
 
-**TTS-Fallback-Regel:** Kommt bis zur `done`-Nachricht kein Server-Audio im Turn, liest die App den Antwort-Text per Android-On-Device-TTS vor (in den Einstellungen abschaltbar).
+**TTS-Fallback-Regel:** Die App liest den Antworttext nur dann per Android-On-Device-TTS vor, wenn die Anfrage per **Audio** (Mikrofon) kam UND der Server in diesem Turn **kein** Audio geliefert hat. Bei Texteingaben wird nie vorgelesen (der Server antwortet dort bewusst ohne Audio). In den Einstellungen abschaltbar.
 
 ---
 
@@ -541,6 +543,10 @@ Verbindlicher Vertrag in `docs/PROTOCOL.md` (App-Repo). **Die App ist fertig geb
 ### Android: Dauerhafter Mikrofon-Indikator (NEU in v1.5)
 **Symptom:** Bei aktivem Wake Word zeigt Android permanent den grünen Mikrofon-Indikator und eine Foreground-Notification.
 **Status:** Erwartetes Plattform-Verhalten (Privacy-Feature), kein Bug. Akku-Last durch Porcupine selbst ist gering; dominanter Faktor ist das offene Mikrofon.
+
+### Android: Freisprech-Echo im Realtime Talk (NEU in v1.5)
+**Symptom:** Bei Wiedergabe über den Lautsprecher (nicht Kopfhörer) kann das Mikrofon die eigene Antwort mithören und einen Selbst-Abbruch (Barge-in) auslösen.
+**Status:** Gemindert — der Realtime-Talk nimmt über `VOICE_COMMUNICATION` auf (aktiviert die Plattform-Echo-Unterdrückung) und legt, falls verfügbar, `AcousticEchoCanceler` + `NoiseSuppressor` auf die Aufnahme. Zusätzlich muss eine mögliche Unterbrechung während laufender/ausklingender Wiedergabe ~300 ms anhalten (Echo-Ausklang-Fenster). Die AEC-Qualität ist geräteabhängig; auf Geräten ohne brauchbare Hardware-AEC bleibt Kopfhörer-Betrieb empfohlen. Vollständige, referenzbasierte Echo-Kompensation ist ein offener Punkt.
 
 ---
 

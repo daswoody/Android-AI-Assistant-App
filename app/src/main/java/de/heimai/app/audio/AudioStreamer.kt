@@ -4,6 +4,8 @@ import android.annotation.SuppressLint
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.NoiseSuppressor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
@@ -18,15 +20,24 @@ import kotlinx.coroutines.isActive
 class AudioStreamer(
     private val sampleRate: Int = 16_000,
 ) {
-    /** RECORD_AUDIO muss vor dem Collect bereits erteilt sein. */
+    /**
+     * @param source Aufnahmequelle. Push-to-Talk nutzt VOICE_RECOGNITION (roher, für
+     *   STT optimiert). Der Realtime-Talk mit gleichzeitiger Wiedergabe nutzt
+     *   VOICE_COMMUNICATION, weil dieser Pfad die Plattform-Echo-Unterdrückung (AEC)
+     *   aktiviert — sonst nimmt das Mikro im Freisprechbetrieb die eigene Antwort auf.
+     *   Zusätzlich werden, falls verfügbar, AcousticEchoCanceler + NoiseSuppressor auf
+     *   die AudioRecord-Session gelegt.
+     *
+     * RECORD_AUDIO muss vor dem Collect bereits erteilt sein.
+     */
     @SuppressLint("MissingPermission")
-    fun stream(): Flow<ByteArray> = flow {
+    fun stream(source: Int = MediaRecorder.AudioSource.VOICE_RECOGNITION): Flow<ByteArray> = flow {
         val minBuffer = AudioRecord.getMinBufferSize(
             sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
         )
         val chunkBytes = sampleRate / 10 * 2 // 100 ms PCM16
         val record = AudioRecord(
-            MediaRecorder.AudioSource.VOICE_RECOGNITION,
+            source,
             sampleRate,
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT,
@@ -36,6 +47,12 @@ class AudioStreamer(
             record.release()
             throw IllegalStateException("AudioRecord konnte nicht initialisiert werden")
         }
+        val aec = if (AcousticEchoCanceler.isAvailable())
+            runCatching { AcousticEchoCanceler.create(record.audioSessionId)?.apply { enabled = true } }.getOrNull()
+        else null
+        val ns = if (NoiseSuppressor.isAvailable())
+            runCatching { NoiseSuppressor.create(record.audioSessionId)?.apply { enabled = true } }.getOrNull()
+        else null
         try {
             record.startRecording()
             val buffer = ByteArray(chunkBytes)
@@ -44,6 +61,8 @@ class AudioStreamer(
                 if (read > 0) emit(buffer.copyOf(read))
             }
         } finally {
+            runCatching { aec?.release() }
+            runCatching { ns?.release() }
             runCatching { record.stop() }
             record.release()
         }

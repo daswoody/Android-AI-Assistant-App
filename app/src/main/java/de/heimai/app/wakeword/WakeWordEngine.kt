@@ -16,27 +16,42 @@ interface WakeWordEngine {
 
 /**
  * Picovoice Porcupine: auf Effizienz optimierte On-Device-Erkennung
- * (<1 % CPU auf modernen Geräten, kein Netzwerk). Kostenlos für
- * Personal Use; benötigt einen AccessKey von console.picovoice.ai,
- * der in den AI-Einstellungen hinterlegt wird.
+ * (<1 % CPU auf modernen Geräten, kein Netzwerk, komplett lokal).
+ *
+ * Der AccessKey ist Picovoices Lizenz-/Attestierungsmechanismus (die Engine
+ * startet ohne gültigen Key nicht) — er wird zentral vom Orchestrator
+ * bereitgestellt (GET /v1/config) und kann in den AI-Einstellungen optional
+ * überschrieben werden.
+ *
+ * @param keyword           Built-in-Keyword-Name ODER [CUSTOM]
+ * @param customKeywordPath Pfad zu einer eigenen .ppn-Datei (leer = Built-in)
+ * @param customModelPath   Pfad zu einem Sprachmodell .pv (nötig für nicht-englische
+ *                          eigene Wake Words; leer = englisches Standardmodell)
  */
 class PorcupineEngine(
     context: Context,
     accessKey: String,
     keyword: String,
+    customKeywordPath: String = "",
+    customModelPath: String = "",
     onDetected: () -> Unit,
 ) : WakeWordEngine {
 
     private val manager: PorcupineManager
 
     init {
-        val builtIn = runCatching { Porcupine.BuiltInKeyword.valueOf(keyword) }
-            .getOrDefault(Porcupine.BuiltInKeyword.COMPUTER)
-        manager = PorcupineManager.Builder()
+        val builder = PorcupineManager.Builder()
             .setAccessKey(accessKey)
-            .setKeyword(builtIn)
             .setSensitivity(0.65f)
-            .build(context.applicationContext) { _ -> onDetected() }
+        if (customKeywordPath.isNotBlank()) {
+            builder.setKeywordPath(customKeywordPath)
+            if (customModelPath.isNotBlank()) builder.setModelPath(customModelPath)
+        } else {
+            val builtIn = runCatching { Porcupine.BuiltInKeyword.valueOf(keyword) }
+                .getOrDefault(Porcupine.BuiltInKeyword.COMPUTER)
+            builder.setKeyword(builtIn)
+        }
+        manager = builder.build(context.applicationContext) { _ -> onDetected() }
     }
 
     override fun start() {
@@ -55,5 +70,8 @@ class PorcupineEngine(
     companion object {
         /** In den Einstellungen wählbare Built-in-Keywords. */
         val KEYWORDS = listOf("COMPUTER", "JARVIS", "PORCUPINE", "BUMBLEBEE", "TERMINATOR")
+
+        /** Sentinel für "eigene .ppn-Datei verwenden". */
+        const val CUSTOM = "CUSTOM"
     }
 }

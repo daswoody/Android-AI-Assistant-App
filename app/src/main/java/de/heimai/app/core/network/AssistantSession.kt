@@ -1,5 +1,6 @@
 package de.heimai.app.core.network
 
+import android.media.MediaRecorder
 import android.util.Base64
 import de.heimai.app.audio.AudioPlayer
 import de.heimai.app.audio.AudioStreamer
@@ -8,6 +9,7 @@ import de.heimai.app.core.model.CardEnvelope
 import de.heimai.app.core.settings.SettingsRepository
 import de.heimai.app.tools.DeviceToolExecutor
 import de.heimai.app.tools.DeviceToolRegistry
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,6 +30,7 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.math.sqrt
 
 enum class ConnectionState { DISCONNECTED, CONNECTING, CONNECTED, ERROR }
 
@@ -84,8 +87,14 @@ class AssistantSession(
     private val streamer = AudioStreamer()
     private val player = AudioPlayer()
 
-    /** true, sobald für den aktuellen Turn Server-Audio ankam (kein TTS-Fallback nötig) */
-    private var turnHadAudio = false
+    /** true, sobald der Server für den aktuellen Turn Audio geliefert hat */
+    @Volatile private var serverAudioThisTurn = false
+    /** true, wenn die aktuelle Anfrage per Mikrofon (Audio) rausging, nicht per Text */
+    @Volatile private var userAudioThisTurn = false
+    /** true, solange eine Sprech-Äußerung läuft (für sauberes audio_end) */
+    @Volatile private var utteranceActive = false
+    /** Zeitpunkt des letzten abgespielten Server-Audio-Chunks (Echo-Ausklang-Schutz) */
+    @Volatile private var lastServerAudioAtMs = 0L
     private var currentAssistantText = StringBuilder()
     private var currentAssistantMsgId: Long? = null
 
@@ -121,30 +130,87 @@ class AssistantSession(
         if (text.isBlank()) return
         addMessage(UiMessage(nextId.getAndIncrement(), "user", text))
         listener?.onUserText(text)
-        turnHadAudio = false
+        // Texteingabe: KEIN TTS-Fallback (Server antwortet hier bewusst ohne Audio)
+        userAudioThisTurn = false
+        serverAudioThisTurn = false
         send(buildJsonObject {
             put("type", "text_input")
             put("text", text)
         })
     }
 
-    /** Push-to-Talk / Realtime: Mikrofon streamen, bis stopListening() kommt. */
-    fun startListening() {
+    /**
+     * Mikrofon streamen.
+     * @param continuous  false = Push-to-Talk (streamt bis stopListening()).
+     *                    true  = Realtime Talk: erkennt Sprechpausen selbst und
+     *                            sendet nach [silenceMs] Stille automatisch audio_end,
+     *                            danach bleibt das Mikrofon für die nächste Äußerung offen.
+     */
+    fun startListening(continuous: Boolean = false, silenceMs: Int = 900) {
         if (micJob != null) return
         interruptPlayback()
         _state.value = _state.value.copy(listening = true, partialTranscript = "")
-        turnHadAudio = false
+        // Turn-Flags werden bewusst NICHT hier gesetzt, sondern erst beim
+        // tatsächlichen Senden (sendAudioChunk/sendAudioEnd) — sonst würde ein
+        // Barge-in die Buchhaltung des noch offenen vorigen Turns überschreiben.
+        val source = if (continuous) MediaRecorder.AudioSource.VOICE_COMMUNICATION
+        else MediaRecorder.AudioSource.VOICE_RECOGNITION
         micJob = scope.launch {
+            val silenceLimit = (silenceMs / CHUNK_MS).coerceAtLeast(1)
+            var noiseFloor = 350.0
+            var inUtterance = false
+            var silenceChunks = 0
+            var bargeChunks = 0
+            val preRoll = ArrayDeque<ByteArray>()
             try {
-                streamer.stream().collect { chunk ->
-                    send(buildJsonObject {
-                        put("type", "audio_chunk")
-                        put("data", Base64.encodeToString(chunk, Base64.NO_WRAP))
-                    })
+                streamer.stream(source).collect { chunk ->
+                    if (!continuous) {
+                        sendAudioChunk(chunk)
+                        return@collect
+                    }
+                    val rms = rmsOf(chunk)
+                    val threshold = maxOf(VOICE_MIN_THRESHOLD, noiseFloor * VOICE_FACTOR)
+                    val isVoice = rms > threshold
+                    // Solange die eigene Antwort läuft ODER gerade ausgeklungen ist,
+                    // gilt Stimme erst nach anhaltender Aktivität als echte Nutzer-Unterbrechung
+                    // (schützt vor Echo/Ausklang der eigenen Ausgabe im Freisprechbetrieb).
+                    val guarding = _state.value.speaking ||
+                        (System.currentTimeMillis() - lastServerAudioAtMs) < PLAYBACK_TAIL_MS
+
+                    if (!inUtterance) {
+                        preRoll.addLast(chunk)
+                        if (preRoll.size > PREROLL_CHUNKS) preRoll.removeFirst()
+                        if (isVoice) {
+                            if (guarding) {
+                                bargeChunks++
+                                if (bargeChunks < BARGE_MIN_CHUNKS) return@collect
+                                interruptPlayback()
+                            }
+                            bargeChunks = 0
+                            inUtterance = true
+                            silenceChunks = 0
+                            while (preRoll.isNotEmpty()) sendAudioChunk(preRoll.removeFirst())
+                        } else {
+                            bargeChunks = 0
+                            noiseFloor = (0.95 * noiseFloor + 0.05 * rms).coerceIn(120.0, 4000.0)
+                        }
+                    } else {
+                        sendAudioChunk(chunk)
+                        if (isVoice) {
+                            silenceChunks = 0
+                        } else {
+                            silenceChunks++
+                            if (silenceChunks >= silenceLimit) {
+                                sendAudioEnd()
+                                inUtterance = false
+                                silenceChunks = 0
+                                preRoll.clear()
+                            }
+                        }
+                    }
                 }
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                // Normales Ende via stopListening() — kein Fehler
-                throw e
+            } catch (e: CancellationException) {
+                throw e // Normales Ende via stopListening() — kein Fehler
             } catch (e: Exception) {
                 fail("Mikrofon-Fehler: ${e.message}")
             }
@@ -154,8 +220,9 @@ class AssistantSession(
     fun stopListening() {
         micJob?.cancel()
         micJob = null
-        if (_state.value.listening) {
-            send(buildJsonObject { put("type", "audio_end") })
+        // Nur abschließen, wenn wirklich eine Äußerung offen war
+        if (_state.value.listening && utteranceActive) {
+            sendAudioEnd()
         }
         _state.value = _state.value.copy(listening = false)
     }
@@ -225,7 +292,8 @@ class AssistantSession(
                 }
             }
             "audio_chunk" -> {
-                turnHadAudio = true
+                serverAudioThisTurn = true
+                lastServerAudioAtMs = System.currentTimeMillis()
                 _state.value = _state.value.copy(speaking = true)
                 val data = obj["data"]?.jsonPrimitive?.content ?: return
                 val rate = obj["sample_rate"]?.jsonPrimitive?.int ?: 24_000
@@ -263,13 +331,55 @@ class AssistantSession(
         }
     }
 
-    /** Kam für diesen Turn kein Server-Audio, lokal vorlesen (Settings-abhängig). */
+    /**
+     * TTS-Fallback: NUR wenn die Anfrage per Mikrofon rausging UND der Server
+     * kein eigenes Audio geliefert hat. Bei Texteingaben antwortet der Server
+     * bewusst ohne Audio — dann wird NICHT vorgelesen.
+     */
     private fun maybeTtsFallback() {
-        if (turnHadAudio) return
+        if (!userAudioThisTurn) return
+        if (serverAudioThisTurn) return
         val lastAssistant = _state.value.messages.lastOrNull { it.role == "assistant" } ?: return
         scope.launch {
             if (settings.current().ttsFallbackEnabled) tts.speak(lastAssistant.text)
         }
+    }
+
+    private fun sendAudioChunk(chunk: ByteArray) {
+        // Ab dem ersten tatsächlich gesendeten Chunk gilt die Äußerung als aktiv
+        // (verhindert leeres audio_end bei sofortigem Stopp im Push-to-Talk).
+        utteranceActive = true
+        userAudioThisTurn = true
+        send(buildJsonObject {
+            put("type", "audio_chunk")
+            put("data", Base64.encodeToString(chunk, Base64.NO_WRAP))
+        })
+    }
+
+    /**
+     * Schließt die aktuelle Äußerung ab. serverAudioThisTurn wird hier (Grenze zur
+     * neuen Server-Antwort) zurückgesetzt — NICHT beim Äußerungsbeginn, damit ein
+     * Barge-in die Audio-Buchhaltung des noch offenen vorigen Turns nicht verfälscht.
+     */
+    private fun sendAudioEnd() {
+        utteranceActive = false
+        userAudioThisTurn = true
+        serverAudioThisTurn = false
+        send(buildJsonObject { put("type", "audio_end") })
+    }
+
+    /** RMS-Lautstärke eines PCM16-mono-Chunks (Little-Endian) für die Sprechpausen-Erkennung. */
+    private fun rmsOf(chunk: ByteArray): Double {
+        var sum = 0.0
+        var count = 0
+        var i = 0
+        while (i + 1 < chunk.size) {
+            val sample = (chunk[i].toInt() and 0xff) or (chunk[i + 1].toInt() shl 8)
+            sum += sample.toDouble() * sample.toDouble()
+            count++
+            i += 2
+        }
+        return if (count == 0) 0.0 else sqrt(sum / count)
     }
 
     private fun upsertAssistantMessage(text: String, final: Boolean) {
@@ -316,5 +426,14 @@ class AssistantSession(
             this@AssistantSession.webSocket = null
             _state.value = _state.value.copy(connection = ConnectionState.DISCONNECTED)
         }
+    }
+
+    private companion object {
+        const val CHUNK_MS = 100                 // Dauer eines Audio-Chunks (AudioStreamer)
+        const val VOICE_MIN_THRESHOLD = 550.0    // absolute RMS-Untergrenze für "Stimme"
+        const val VOICE_FACTOR = 2.2             // Stimme = RMS über Faktor × Grundrauschen
+        const val PREROLL_CHUNKS = 3             // ~300 ms Vorlauf vor Sprechbeginn mitsenden
+        const val BARGE_MIN_CHUNKS = 3           // ~300 ms Stimme nötig, um laufende Antwort zu unterbrechen
+        const val PLAYBACK_TAIL_MS = 500L        // Ausklang-Fenster nach letztem Server-Audio (AudioPlayer-Puffer)
     }
 }
