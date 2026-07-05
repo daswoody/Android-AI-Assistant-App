@@ -53,6 +53,7 @@ import de.heimai.app.core.settings.AppSettings
 import de.heimai.app.features.chat.ChatViewModel
 import de.heimai.app.ui.components.MessageItem
 import de.heimai.app.ui.components.ToolConfirmationDialog
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 /**
