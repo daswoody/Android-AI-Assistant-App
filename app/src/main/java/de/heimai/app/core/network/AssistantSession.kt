@@ -153,11 +153,16 @@ class AssistantSession(
         // Turn-Flags werden bewusst NICHT hier gesetzt, sondern erst beim
         // tatsächlichen Senden (sendAudioChunk/sendAudioEnd) — sonst würde ein
         // Barge-in die Buchhaltung des noch offenen vorigen Turns überschreiben.
-        val source = if (continuous) MediaRecorder.AudioSource.VOICE_COMMUNICATION
-        else MediaRecorder.AudioSource.VOICE_RECOGNITION
+        //
+        // VOICE_RECOGNITION liefert rohere, lautere Pegel — nötig, damit die VAD im
+        // Realtime-Talk zuverlässig anspringt. VOICE_COMMUNICATION dämpfte die Pegel
+        // via AGC/Rauschunterdrückung teils so stark, dass gar nichts mehr die Schwelle
+        // erreichte und nichts gesendet wurde. Echo-Minderung übernimmt der optionale
+        // AcousticEchoCanceler in AudioStreamer.
+        val source = MediaRecorder.AudioSource.VOICE_RECOGNITION
         micJob = scope.launch {
             val silenceLimit = (silenceMs / CHUNK_MS).coerceAtLeast(1)
-            var noiseFloor = 350.0
+            var noiseFloor = 200.0
             var inUtterance = false
             var silenceChunks = 0
             var bargeChunks = 0
@@ -169,18 +174,21 @@ class AssistantSession(
                         return@collect
                     }
                     val rms = rmsOf(chunk)
+                    // Erkennung primär RELATIV zum Grundrauschen (skaleninvariant über
+                    // Geräte/Pegel), mit niedrigem absolutem Boden gegen Stille.
                     val threshold = maxOf(VOICE_MIN_THRESHOLD, noiseFloor * VOICE_FACTOR)
                     val isVoice = rms > threshold
                     // Solange die eigene Antwort läuft ODER gerade ausgeklungen ist,
-                    // gilt Stimme erst nach anhaltender Aktivität als echte Nutzer-Unterbrechung
-                    // (schützt vor Echo/Ausklang der eigenen Ausgabe im Freisprechbetrieb).
+                    // muss eine Unterbrechung deutlich lauter sein und anhalten
+                    // (Echo-Schutz im Freisprechbetrieb).
                     val guarding = _state.value.speaking ||
                         (System.currentTimeMillis() - lastServerAudioAtMs) < PLAYBACK_TAIL_MS
 
                     if (!inUtterance) {
                         preRoll.addLast(chunk)
                         if (preRoll.size > PREROLL_CHUNKS) preRoll.removeFirst()
-                        if (isVoice) {
+                        val startsUtterance = if (guarding) rms > threshold * BARGE_LOUD_FACTOR else isVoice
+                        if (startsUtterance) {
                             if (guarding) {
                                 bargeChunks++
                                 if (bargeChunks < BARGE_MIN_CHUNKS) return@collect
@@ -192,7 +200,10 @@ class AssistantSession(
                             while (preRoll.isNotEmpty()) sendAudioChunk(preRoll.removeFirst())
                         } else {
                             bargeChunks = 0
-                            noiseFloor = (0.95 * noiseFloor + 0.05 * rms).coerceIn(120.0, 4000.0)
+                            // Grundrauschen nur bei echter Stille nachführen (nicht bei Echo/Stimme)
+                            if (rms < threshold) {
+                                noiseFloor = (0.9 * noiseFloor + 0.1 * rms).coerceIn(100.0, 4000.0)
+                            }
                         }
                     } else {
                         sendAudioChunk(chunk)
@@ -430,8 +441,9 @@ class AssistantSession(
 
     private companion object {
         const val CHUNK_MS = 100                 // Dauer eines Audio-Chunks (AudioStreamer)
-        const val VOICE_MIN_THRESHOLD = 550.0    // absolute RMS-Untergrenze für "Stimme"
+        const val VOICE_MIN_THRESHOLD = 180.0    // niedriger absoluter Boden gegen Stille (Erkennung v. a. relativ)
         const val VOICE_FACTOR = 2.2             // Stimme = RMS über Faktor × Grundrauschen
+        const val BARGE_LOUD_FACTOR = 2.5        // Unterbrechung während Wiedergabe muss deutlich lauter sein (Echo-Schutz)
         const val PREROLL_CHUNKS = 3             // ~300 ms Vorlauf vor Sprechbeginn mitsenden
         const val BARGE_MIN_CHUNKS = 3           // ~300 ms Stimme nötig, um laufende Antwort zu unterbrechen
         const val PLAYBACK_TAIL_MS = 500L        // Ausklang-Fenster nach letztem Server-Audio (AudioPlayer-Puffer)
