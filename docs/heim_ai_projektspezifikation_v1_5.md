@@ -546,7 +546,12 @@ Verbindlicher Vertrag in `docs/PROTOCOL.md` (App-Repo). **Die App ist fertig geb
 
 ### Android: Freisprech-Echo im Realtime Talk (NEU in v1.5)
 **Symptom:** Bei Wiedergabe über den Lautsprecher (nicht Kopfhörer) kann das Mikrofon die eigene Antwort mithören und einen Selbst-Abbruch (Barge-in) auslösen.
-**Status:** Gemindert — der Realtime-Talk nimmt über `VOICE_COMMUNICATION` auf (aktiviert die Plattform-Echo-Unterdrückung) und legt, falls verfügbar, `AcousticEchoCanceler` + `NoiseSuppressor` auf die Aufnahme. Zusätzlich muss eine mögliche Unterbrechung während laufender/ausklingender Wiedergabe ~300 ms anhalten (Echo-Ausklang-Fenster). Die AEC-Qualität ist geräteabhängig; auf Geräten ohne brauchbare Hardware-AEC bleibt Kopfhörer-Betrieb empfohlen. Vollständige, referenzbasierte Echo-Kompensation ist ein offener Punkt.
+**Status:** Mehrstufig gemindert, mit Nutzer-Kalibrierung:
+1. Aufnahme über `VOICE_RECOGNITION` (zuverlässige Pegel) + best-effort `AcousticEchoCanceler`/`NoiseSuppressor`.
+2. Kalibrierbare **Lautstärke-Schwelle** (RMS) mit **Live-Pegelanzeige** im Realtime-Talk-Screen: Nutzer setzt die Marke so, dass die eigene Stimme darüber, das KI-Echo darunter liegt. Barge-in während der Wiedergabe verlangt zusätzlich ein deutlich lauteres, anhaltendes Signal (Faktor + ~300 ms).
+3. **Half-Duplex-Option** (Setting): Mikro pausiert während der KI-Antwort → garantiert kein Selbst-Mithören, dafür kein Reinreden. Empfohlen für Geräte ohne brauchbare Hardware-AEC.
+
+**Warum kein perfektes Full-Duplex out-of-the-box:** Echtes referenzbasiertes AEC (das Playback-Signal aus dem Mic-Signal herausrechnen) ist der Industriestandard — OpenAI Realtime/LiveKit setzen client-seitiges AEC als Pflicht für Lautsprecher-Betrieb voraus. Auf Android ist die Hardware-AEC (`AcousticEchoCanceler`) gerätefragmentiert; robuste Apps binden daher oft **WebRTC AEC3** als Software-AEC ein (konsistent über Geräte, höhere CPU-Last). **Offener Punkt:** WebRTC-AEC3-Integration als „richtige" Full-Duplex-Lösung evaluieren.
 
 ---
 

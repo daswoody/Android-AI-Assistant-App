@@ -81,6 +81,10 @@ class AssistantSession(
     private val _state = MutableStateFlow(SessionState())
     val state: StateFlow<SessionState> = _state.asStateFlow()
 
+    /** Aktueller Mikrofon-Pegel (RMS) im Realtime Talk — für die Pegelanzeige/Kalibrierung. */
+    private val _micLevel = MutableStateFlow(0f)
+    val micLevel: StateFlow<Float> = _micLevel.asStateFlow()
+
     private val nextId = AtomicLong(1)
     private var webSocket: WebSocket? = null
     private var micJob: Job? = null
@@ -95,6 +99,9 @@ class AssistantSession(
     @Volatile private var utteranceActive = false
     /** Zeitpunkt des letzten abgespielten Server-Audio-Chunks (Echo-Ausklang-Schutz) */
     @Volatile private var lastServerAudioAtMs = 0L
+    /** Live einstellbare VAD-Parameter (Regler in der Talk-Oberfläche greifen sofort). */
+    @Volatile private var vadThreshold = 400.0
+    @Volatile private var vadHalfDuplex = false
     private var currentAssistantText = StringBuilder()
     private var currentAssistantMsgId: Long? = null
 
@@ -141,13 +148,23 @@ class AssistantSession(
 
     /**
      * Mikrofon streamen.
-     * @param continuous  false = Push-to-Talk (streamt bis stopListening()).
-     *                    true  = Realtime Talk: erkennt Sprechpausen selbst und
-     *                            sendet nach [silenceMs] Stille automatisch audio_end,
-     *                            danach bleibt das Mikrofon für die nächste Äußerung offen.
+     * @param continuous   false = Push-to-Talk (streamt bis stopListening()).
+     *                     true  = Realtime Talk: erkennt Sprechpausen selbst und
+     *                             sendet nach [silenceMs] Stille automatisch audio_end.
+     * @param silenceMs    Stille-Dauer bis zum automatischen Senden.
+     * @param thresholdRms Lautstärke-Schwelle (RMS), ab der Sprache zählt (kalibrierbar).
+     * @param halfDuplex   true = Mikrofon während der eigenen Antwort ignorieren
+     *                     (kein Barge-in, dafür garantiert kein Selbst-Mithören).
      */
-    fun startListening(continuous: Boolean = false, silenceMs: Int = 900) {
+    fun startListening(
+        continuous: Boolean = false,
+        silenceMs: Int = 900,
+        thresholdRms: Int = 400,
+        halfDuplex: Boolean = false,
+    ) {
         if (micJob != null) return
+        vadThreshold = thresholdRms.toDouble()
+        vadHalfDuplex = halfDuplex
         interruptPlayback()
         _state.value = _state.value.copy(listening = true, partialTranscript = "")
         // Turn-Flags werden bewusst NICHT hier gesetzt, sondern erst beim
@@ -162,7 +179,6 @@ class AssistantSession(
         val source = MediaRecorder.AudioSource.VOICE_RECOGNITION
         micJob = scope.launch {
             val silenceLimit = (silenceMs / CHUNK_MS).coerceAtLeast(1)
-            var noiseFloor = 200.0
             var inUtterance = false
             var silenceChunks = 0
             var bargeChunks = 0
@@ -174,19 +190,25 @@ class AssistantSession(
                         return@collect
                     }
                     val rms = rmsOf(chunk)
-                    // Erkennung primär RELATIV zum Grundrauschen (skaleninvariant über
-                    // Geräte/Pegel), mit niedrigem absolutem Boden gegen Stille.
-                    val threshold = maxOf(VOICE_MIN_THRESHOLD, noiseFloor * VOICE_FACTOR)
+                    _micLevel.value = rms.toFloat()
+                    val threshold = vadThreshold
                     val isVoice = rms > threshold
-                    // Solange die eigene Antwort läuft ODER gerade ausgeklungen ist,
-                    // muss eine Unterbrechung deutlich lauter sein und anhalten
-                    // (Echo-Schutz im Freisprechbetrieb).
+                    // Läuft die eigene Antwort (oder klingt gerade aus)?
                     val guarding = _state.value.speaking ||
                         (System.currentTimeMillis() - lastServerAudioAtMs) < PLAYBACK_TAIL_MS
+
+                    // Half-Duplex: während der eigenen Antwort Mikrofon komplett ignorieren
+                    // (kein Barge-in, dafür garantiert kein Selbst-Mithören).
+                    if (vadHalfDuplex && guarding) {
+                        bargeChunks = 0
+                        if (inUtterance) { inUtterance = false; silenceChunks = 0; preRoll.clear() }
+                        return@collect
+                    }
 
                     if (!inUtterance) {
                         preRoll.addLast(chunk)
                         if (preRoll.size > PREROLL_CHUNKS) preRoll.removeFirst()
+                        // Unterbrechung während laufender Antwort muss deutlich lauter sein (Echo-Schutz)
                         val startsUtterance = if (guarding) rms > threshold * BARGE_LOUD_FACTOR else isVoice
                         if (startsUtterance) {
                             if (guarding) {
@@ -200,10 +222,6 @@ class AssistantSession(
                             while (preRoll.isNotEmpty()) sendAudioChunk(preRoll.removeFirst())
                         } else {
                             bargeChunks = 0
-                            // Grundrauschen nur bei echter Stille nachführen (nicht bei Echo/Stimme)
-                            if (rms < threshold) {
-                                noiseFloor = (0.9 * noiseFloor + 0.1 * rms).coerceIn(100.0, 4000.0)
-                            }
                         }
                     } else {
                         sendAudioChunk(chunk)
@@ -224,8 +242,16 @@ class AssistantSession(
                 throw e // Normales Ende via stopListening() — kein Fehler
             } catch (e: Exception) {
                 fail("Mikrofon-Fehler: ${e.message}")
+            } finally {
+                _micLevel.value = 0f
             }
         }
+    }
+
+    /** VAD-Parameter live ändern (Regler in der Talk-Oberfläche), ohne die Aufnahme neu zu starten. */
+    fun updateVad(thresholdRms: Int, halfDuplex: Boolean) {
+        vadThreshold = thresholdRms.toDouble()
+        vadHalfDuplex = halfDuplex
     }
 
     fun stopListening() {
@@ -441,8 +467,6 @@ class AssistantSession(
 
     private companion object {
         const val CHUNK_MS = 100                 // Dauer eines Audio-Chunks (AudioStreamer)
-        const val VOICE_MIN_THRESHOLD = 180.0    // niedriger absoluter Boden gegen Stille (Erkennung v. a. relativ)
-        const val VOICE_FACTOR = 2.2             // Stimme = RMS über Faktor × Grundrauschen
         const val BARGE_LOUD_FACTOR = 2.5        // Unterbrechung während Wiedergabe muss deutlich lauter sein (Echo-Schutz)
         const val PREROLL_CHUNKS = 3             // ~300 ms Vorlauf vor Sprechbeginn mitsenden
         const val BARGE_MIN_CHUNKS = 3           // ~300 ms Stimme nötig, um laufende Antwort zu unterbrechen

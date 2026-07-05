@@ -298,6 +298,39 @@ fun AiSettingsScreen(onBack: () -> Unit) {
             steps = 26, // 100-ms-Raster zwischen 300 und 3000
             modifier = Modifier.fillMaxWidth(),
         )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Mikrofon-Schwelle: ${settings.talkThreshold}",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Text(
+            "Höher = die KI reagiert nur auf lautere/klarere Stimme und hört sich im " +
+                "Freisprechbetrieb weniger selbst. Am besten mit der Live-Pegelanzeige im " +
+                "Realtime-Talk-Screen einstellen.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Slider(
+            value = settings.talkThreshold.toFloat(),
+            onValueChange = { scope.launch { container.settings.setTalkThreshold(it.roundToInt()) } },
+            valueRange = 50f..4000f,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Half-Duplex (Mikro pausiert während Antwort)")
+                Text(
+                    "Verhindert Selbst-Mithören zuverlässig — dafür kein Reinreden/Unterbrechen " +
+                        "während die KI spricht. Für Geräte ohne gute Echo-Unterdrückung empfohlen.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = settings.talkHalfDuplex,
+                onCheckedChange = { scope.launch { container.settings.setTalkHalfDuplex(it) } },
+            )
+        }
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
 
         // --- Wake Word ---
