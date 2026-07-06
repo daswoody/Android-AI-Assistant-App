@@ -85,6 +85,7 @@ class AssistantOverlayActivity : ComponentActivity() {
             settings = container.settings,
             toolExecutor = container.toolExecutor,
             tts = container.tts,
+            audioSession = container.audioSession,
             mode = "assist",
             listener = recorder,
         )

@@ -281,6 +281,23 @@ fun AiSettingsScreen(onBack: () -> Unit) {
 
         // --- Realtime Talk ---
         Text("Realtime Talk", style = MaterialTheme.typography.titleSmall)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Echo-Unterdrückung (Freisprechen)")
+                Text(
+                    "Talk läuft wie ein Freisprech-Telefonat, damit die geräteeigene " +
+                        "Anruf-Echo-Unterdrückung greift. Empfohlen an. Ohne Kopfhörer/AEC " +
+                        "sonst Half-Duplex nutzen.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = settings.talkAec,
+                onCheckedChange = { scope.launch { container.settings.setTalkAec(it) } },
+            )
+        }
+        Spacer(Modifier.height(8.dp))
         Text(
             "Automatisch senden nach dieser Sprechpause: ${settings.talkSilenceMs} ms",
             style = MaterialTheme.typography.bodyMedium,

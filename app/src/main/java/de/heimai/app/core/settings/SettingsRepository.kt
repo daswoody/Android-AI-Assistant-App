@@ -42,6 +42,13 @@ data class AppSettings(
      */
     val talkHalfDuplex: Boolean = false,
     /**
+     * Realtime Talk: Echo-Unterdrückung über den Kommunikations-Audiomodus.
+     * Wenn true, läuft der Talk wie ein Freisprech-Telefonat (MODE_IN_COMMUNICATION,
+     * VOICE_COMMUNICATION-Aufnahme, Wiedergabe auf dem Voice-Call-Pfad) — damit greift
+     * die geräteeigene, anrufqualitäts-Echo-Unterdrückung (Full-Duplex, Barge-in möglich).
+     */
+    val talkAec: Boolean = true,
+    /**
      * Rechte-Modus: true = bei entsperrtem Gerät keine separate Bestätigung
      * für sensible Tool-Aktionen; false = immer bestätigen.
      */
@@ -75,6 +82,7 @@ class SettingsRepository(private val context: Context) {
         val TALK_SILENCE_MS = intPreferencesKey("talk_silence_ms")
         val TALK_THRESHOLD = intPreferencesKey("talk_threshold")
         val TALK_HALF_DUPLEX = booleanPreferencesKey("talk_half_duplex")
+        val TALK_AEC = booleanPreferencesKey("talk_aec")
         val RELAXED_SECURITY = booleanPreferencesKey("relaxed_security")
         val TTS_FALLBACK = booleanPreferencesKey("tts_fallback")
         val CARD_LAYOUTS_VERSION = intPreferencesKey("card_layouts_version")
@@ -98,6 +106,7 @@ class SettingsRepository(private val context: Context) {
             talkSilenceMs = p[Keys.TALK_SILENCE_MS] ?: 900,
             talkThreshold = p[Keys.TALK_THRESHOLD] ?: 400,
             talkHalfDuplex = p[Keys.TALK_HALF_DUPLEX] ?: false,
+            talkAec = p[Keys.TALK_AEC] ?: true,
             relaxedSecurity = p[Keys.RELAXED_SECURITY] ?: false,
             ttsFallbackEnabled = p[Keys.TTS_FALLBACK] ?: true,
             cardLayoutsVersion = p[Keys.CARD_LAYOUTS_VERSION] ?: 0,
@@ -134,6 +143,7 @@ class SettingsRepository(private val context: Context) {
     suspend fun setTalkSilenceMs(ms: Int) = edit { it[Keys.TALK_SILENCE_MS] = ms.coerceIn(300, 5000) }
     suspend fun setTalkThreshold(rms: Int) = edit { it[Keys.TALK_THRESHOLD] = rms.coerceIn(50, 4000) }
     suspend fun setTalkHalfDuplex(enabled: Boolean) = edit { it[Keys.TALK_HALF_DUPLEX] = enabled }
+    suspend fun setTalkAec(enabled: Boolean) = edit { it[Keys.TALK_AEC] = enabled }
     suspend fun setRelaxedSecurity(relaxed: Boolean) = edit { it[Keys.RELAXED_SECURITY] = relaxed }
     suspend fun setTtsFallback(enabled: Boolean) = edit { it[Keys.TTS_FALLBACK] = enabled }
     suspend fun setCardLayoutsVersion(v: Int) = edit { it[Keys.CARD_LAYOUTS_VERSION] = v }

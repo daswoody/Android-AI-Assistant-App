@@ -3,6 +3,7 @@ package de.heimai.app.core.network
 import android.media.MediaRecorder
 import android.util.Base64
 import de.heimai.app.audio.AudioPlayer
+import de.heimai.app.audio.AudioSessionController
 import de.heimai.app.audio.AudioStreamer
 import de.heimai.app.audio.TtsFallback
 import de.heimai.app.core.model.CardEnvelope
@@ -68,6 +69,7 @@ class AssistantSession(
     private val settings: SettingsRepository,
     private val toolExecutor: DeviceToolExecutor,
     private val tts: TtsFallback,
+    private val audioSession: AudioSessionController,
     /** chat | talk | assist — rein informativ für den Server */
     private val mode: String,
     private val listener: Listener? = null,
@@ -102,6 +104,8 @@ class AssistantSession(
     /** Live einstellbare VAD-Parameter (Regler in der Talk-Oberfläche greifen sofort). */
     @Volatile private var vadThreshold = 400.0
     @Volatile private var vadHalfDuplex = false
+    /** true, solange der Kommunikations-Audiomodus (Geräte-AEC) für diese Sitzung aktiv ist. */
+    private var commActive = false
     private var currentAssistantText = StringBuilder()
     private var currentAssistantMsgId: Long? = null
 
@@ -155,28 +159,37 @@ class AssistantSession(
      * @param thresholdRms Lautstärke-Schwelle (RMS), ab der Sprache zählt (kalibrierbar).
      * @param halfDuplex   true = Mikrofon während der eigenen Antwort ignorieren
      *                     (kein Barge-in, dafür garantiert kein Selbst-Mithören).
+     * @param aec          true = Kommunikations-Audiomodus + Voice-Call-Aufnahme/-Wiedergabe,
+     *                     damit die geräteeigene Echo-Unterdrückung greift (Full-Duplex).
      */
     fun startListening(
         continuous: Boolean = false,
         silenceMs: Int = 900,
         thresholdRms: Int = 400,
         halfDuplex: Boolean = false,
+        aec: Boolean = false,
     ) {
         if (micJob != null) return
         vadThreshold = thresholdRms.toDouble()
         vadHalfDuplex = halfDuplex
+        // Kommunikationsmodus + Voice-Call-Routing aktivieren, BEVOR das Mikrofon öffnet,
+        // damit die Geräte-AEC das Wiedergabesignal als Referenz kennt (nur Realtime Talk).
+        val useAec = continuous && aec
+        if (useAec) {
+            audioSession.enterCommunication()
+            commActive = true
+        }
+        player.communication = useAec
         interruptPlayback()
         _state.value = _state.value.copy(listening = true, partialTranscript = "")
         // Turn-Flags werden bewusst NICHT hier gesetzt, sondern erst beim
         // tatsächlichen Senden (sendAudioChunk/sendAudioEnd) — sonst würde ein
         // Barge-in die Buchhaltung des noch offenen vorigen Turns überschreiben.
         //
-        // VOICE_RECOGNITION liefert rohere, lautere Pegel — nötig, damit die VAD im
-        // Realtime-Talk zuverlässig anspringt. VOICE_COMMUNICATION dämpfte die Pegel
-        // via AGC/Rauschunterdrückung teils so stark, dass gar nichts mehr die Schwelle
-        // erreichte und nichts gesendet wurde. Echo-Minderung übernimmt der optionale
-        // AcousticEchoCanceler in AudioStreamer.
-        val source = MediaRecorder.AudioSource.VOICE_RECOGNITION
+        // Mit AEC: VOICE_COMMUNICATION (Voice-Call-Pfad, Geräte-Echo-Unterdrückung greift).
+        // Ohne AEC: VOICE_RECOGNITION (rohere, lautere Pegel für die VAD).
+        val source = if (useAec) MediaRecorder.AudioSource.VOICE_COMMUNICATION
+        else MediaRecorder.AudioSource.VOICE_RECOGNITION
         micJob = scope.launch {
             val silenceLimit = (silenceMs / CHUNK_MS).coerceAtLeast(1)
             var inUtterance = false
@@ -260,6 +273,11 @@ class AssistantSession(
         // Nur abschließen, wenn wirklich eine Äußerung offen war
         if (_state.value.listening && utteranceActive) {
             sendAudioEnd()
+        }
+        if (commActive) {
+            audioSession.exitCommunication()
+            player.communication = false
+            commActive = false
         }
         _state.value = _state.value.copy(listening = false)
     }

@@ -2,6 +2,7 @@ package de.heimai.app.core
 
 import android.content.Context
 import androidx.room.Room
+import de.heimai.app.audio.AudioSessionController
 import de.heimai.app.audio.TtsFallback
 import de.heimai.app.cards.CardLayoutRepository
 import de.heimai.app.core.db.AppDatabase
@@ -47,4 +48,6 @@ class AppContainer(private val context: Context) {
     val toolExecutor: DeviceToolExecutor by lazy { DeviceToolExecutor(context, settings) }
 
     val tts: TtsFallback by lazy { TtsFallback(context) }
+
+    val audioSession: AudioSessionController by lazy { AudioSessionController(context) }
 }

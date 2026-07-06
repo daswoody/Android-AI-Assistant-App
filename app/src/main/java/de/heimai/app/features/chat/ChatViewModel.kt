@@ -46,6 +46,7 @@ class ChatViewModel(
             settings = container.settings,
             toolExecutor = container.toolExecutor,
             tts = container.tts,
+            audioSession = container.audioSession,
             mode = mode,
             listener = recorder,
         )

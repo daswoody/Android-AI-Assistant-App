@@ -545,13 +545,19 @@ Verbindlicher Vertrag in `docs/PROTOCOL.md` (App-Repo). **Die App ist fertig geb
 **Status:** Erwartetes Plattform-Verhalten (Privacy-Feature), kein Bug. Akku-Last durch Porcupine selbst ist gering; dominanter Faktor ist das offene Mikrofon.
 
 ### Android: Freisprech-Echo im Realtime Talk (NEU in v1.5)
-**Symptom:** Bei Wiedergabe über den Lautsprecher (nicht Kopfhörer) kann das Mikrofon die eigene Antwort mithören und einen Selbst-Abbruch (Barge-in) auslösen.
-**Status:** Mehrstufig gemindert, mit Nutzer-Kalibrierung:
-1. Aufnahme über `VOICE_RECOGNITION` (zuverlässige Pegel) + best-effort `AcousticEchoCanceler`/`NoiseSuppressor`.
-2. Kalibrierbare **Lautstärke-Schwelle** (RMS) mit **Live-Pegelanzeige** im Realtime-Talk-Screen: Nutzer setzt die Marke so, dass die eigene Stimme darüber, das KI-Echo darunter liegt. Barge-in während der Wiedergabe verlangt zusätzlich ein deutlich lauteres, anhaltendes Signal (Faktor + ~300 ms).
-3. **Half-Duplex-Option** (Setting): Mikro pausiert während der KI-Antwort → garantiert kein Selbst-Mithören, dafür kein Reinreden. Empfohlen für Geräte ohne brauchbare Hardware-AEC.
+**Symptom:** Bei Lautsprecher-Wiedergabe hört das Mikrofon die eigene Antwort mit; auf manchen Geräten ist das Echo lauter als die eigene Stimme → reine Schwellenwerte reichen nicht.
 
-**Warum kein perfektes Full-Duplex out-of-the-box:** Echtes referenzbasiertes AEC (das Playback-Signal aus dem Mic-Signal herausrechnen) ist der Industriestandard — OpenAI Realtime/LiveKit setzen client-seitiges AEC als Pflicht für Lautsprecher-Betrieb voraus. Auf Android ist die Hardware-AEC (`AcousticEchoCanceler`) gerätefragmentiert; robuste Apps binden daher oft **WebRTC AEC3** als Software-AEC ein (konsistent über Geräte, höhere CPU-Last). **Offener Punkt:** WebRTC-AEC3-Integration als „richtige" Full-Duplex-Lösung evaluieren.
+**Primäre Lösung (v1.5): Kommunikations-Audiomodus.** Der Realtime Talk läuft wie ein Freisprech-Telefonat:
+- `AudioManager.MODE_IN_COMMUNICATION` + Routing auf den Lautsprecher über `setCommunicationDevice` (bzw. `setSpeakerphoneOn` < API 31),
+- Aufnahme über `VOICE_COMMUNICATION`, Wiedergabe über `USAGE_VOICE_COMMUNICATION` (Voice-Call-Stream),
+- dadurch greift die **geräteeigene, anrufqualitäts-Echo-Unterdrückung** (auf AOSP/vielen Geräten die WebRTC-AEC) — dieselbe, die Telefonate im Freisprechmodus nutzen. Sie kennt das Wiedergabesignal als Referenz und rechnet es aus dem Mic-Signal heraus (Full-Duplex, Barge-in möglich).
+- Umschaltbar (Setting `talkAec`, Default an), plus `AcousticEchoCanceler`/`NoiseSuppressor` best-effort auf der Aufnahmesession.
+
+**Fallbacks/Ergänzungen:**
+- Kalibrierbare **Lautstärke-Schwelle** (RMS) mit **Live-Pegelanzeige** zum Feintuning.
+- **Half-Duplex** (Mikro pausiert während der Antwort) — garantiert kein Selbst-Mithören, kein Barge-in.
+
+**Tradeoffs des Kommunikationsmodus:** Wiedergabe hängt an der In-Call-Lautstärke (separate Lautstärkeregelung); der Modus wird beim Verlassen des Talks zurückgesetzt. Reicht die Geräte-AEC auf einem spezifischen Gerät nicht, ist der nächste Schritt eine **gebündelte WebRTC-AEC3-Software-Bibliothek** (native `.so` via JitPack/NDK). **Offener Punkt:** bleibt als „schwerere" Fallback-Option dokumentiert; erfordert Test auf echtem Gerät.
 
 ---
 

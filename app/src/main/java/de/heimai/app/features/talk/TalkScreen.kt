@@ -96,6 +96,20 @@ fun TalkScreen(onBack: () -> Unit) {
                 silenceMs = settings.talkSilenceMs,
                 thresholdRms = settings.talkThreshold,
                 halfDuplex = settings.talkHalfDuplex,
+                aec = settings.talkAec,
+            )
+        }
+    }
+    // AEC-Umschalten erfordert einen anderen Audiopfad → Aufnahme neu starten
+    LaunchedEffect(settings.talkAec) {
+        if (state.listening) {
+            viewModel.session.stopListening()
+            viewModel.session.startListening(
+                continuous = true,
+                silenceMs = settings.talkSilenceMs,
+                thresholdRms = settings.talkThreshold,
+                halfDuplex = settings.talkHalfDuplex,
+                aec = settings.talkAec,
             )
         }
     }
@@ -147,6 +161,24 @@ fun TalkScreen(onBack: () -> Unit) {
                     MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
             )
             Spacer(Modifier.height(12.dp))
+
+            // Echo-Unterdrückung über den Kommunikations-Audiomodus (Geräte-AEC).
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Echo-Unterdrückung (Freisprechen)", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Nutzt die anrufqualitäts-Echo-Unterdrückung des Geräts. Bei Wechsel " +
+                            "ggf. Schwelle neu einstellen.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = settings.talkAec,
+                    onCheckedChange = { scope.launch { container.settings.setTalkAec(it) } },
+                )
+            }
+            Spacer(Modifier.height(8.dp))
 
             // Live-Pegelanzeige + Schwellen-Regler zum Kalibrieren des Sweet-Spots.
             // Ziel: die Marke (Schwelle) so setzen, dass DEINE Stimme den Balken
@@ -201,6 +233,7 @@ fun TalkScreen(onBack: () -> Unit) {
                         silenceMs = settings.talkSilenceMs,
                         thresholdRms = settings.talkThreshold,
                         halfDuplex = settings.talkHalfDuplex,
+                        aec = settings.talkAec,
                     )
                     else micLauncher.launch(Manifest.permission.RECORD_AUDIO)
                 },
