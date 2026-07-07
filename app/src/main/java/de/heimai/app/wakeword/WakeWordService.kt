@@ -23,9 +23,9 @@ import de.heimai.app.assistant.HeimVoiceInteractionService
 
 /**
  * Dauerhaft laufender Microphone-Foreground-Service für die
- * Wake-Word-Erkennung. Energie-Profil: Porcupine dekodiert auf dem
- * DSP-freundlichen Pfad (~16 kHz Mono, winziges Modell) — der dominante
- * Verbraucher ist das offene Mikrofon selbst, nicht die Erkennung.
+ * Wake-Word-Erkennung mit openWakeWord (TFLite). Energie-Profil: die teure
+ * ML-Pipeline läuft nur bei Geräusch (Pegel-Gate in der Engine); bei Stille
+ * kostet nur das offene Mikrofon + RMS Strom.
  *
  * Bei Erkennung wird das Assistant-Popup geöffnet:
  *  1. bevorzugt über die VoiceInteraction-Session (wenn Heim-AI als
@@ -52,19 +52,20 @@ class WakeWordService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startInForeground()
         val settings = HeimAiApp.from(application).container.settings.currentBlocking()
-        val accessKey = settings.effectiveWakeWordKey
-        val useCustom = settings.wakeWordKeyword == PorcupineEngine.CUSTOM &&
+        val useCustom = settings.wakeWordKeyword == OpenWakeWordEngine.CUSTOM &&
             settings.customWakeWordPath.isNotBlank()
-        val configReady = if (settings.wakeWordKeyword == PorcupineEngine.CUSTOM) useCustom else true
-        if (!settings.wakeWordEnabled || accessKey.isBlank() || !configReady || !hasMicPermission()) {
+        // openWakeWord braucht KEINEN Lizenz-Key. Bereit, sobald ein Modell gewählt ist.
+        val configReady = if (settings.wakeWordKeyword == OpenWakeWordEngine.CUSTOM) useCustom else true
+        if (!settings.wakeWordEnabled || !configReady || !hasMicPermission()) {
             stopSelf()
             return START_NOT_STICKY
         }
         val signature = listOf(
-            accessKey,
             settings.wakeWordKeyword,
             if (useCustom) settings.customWakeWordPath else "",
-            if (useCustom) settings.customWakeWordModelPath else "",
+            settings.wakeWordThreshold.toString(),
+            settings.wakeWordEnergyGate.toString(),
+            settings.wakeWordGateRms.toString(),
         ).joinToString("|")
 
         // Unveränderte Konfiguration + bereits gebaute Engine: NICHTS tun.
@@ -78,12 +79,13 @@ class WakeWordService : Service() {
         engine?.release()
         engine = null
         try {
-            engine = PorcupineEngine(
+            engine = OpenWakeWordEngine(
                 context = this,
-                accessKey = accessKey,
-                keyword = settings.wakeWordKeyword,
-                customKeywordPath = if (useCustom) settings.customWakeWordPath else "",
-                customModelPath = if (useCustom) settings.customWakeWordModelPath else "",
+                wakeWordModel = settings.wakeWordKeyword,
+                customModelPath = if (useCustom) settings.customWakeWordPath else "",
+                threshold = settings.wakeWordThreshold / 100f,
+                energyGate = settings.wakeWordEnergyGate,
+                gateRms = settings.wakeWordGateRms.toDouble(),
                 onDetected = ::onWakeWord,
             )
             builtSignature = signature

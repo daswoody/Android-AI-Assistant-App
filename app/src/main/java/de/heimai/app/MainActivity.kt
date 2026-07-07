@@ -47,10 +47,9 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             if (initial.isLoggedIn) {
                 container.cardLayouts.sync()
-                container.api.syncClientConfig()
             }
         }
-        if (initial.wakeWordEnabled && initial.effectiveWakeWordKey.isNotBlank()) {
+        if (initial.wakeWordEnabled && initial.wakeWordReady) {
             WakeWordService.start(this)
         }
 

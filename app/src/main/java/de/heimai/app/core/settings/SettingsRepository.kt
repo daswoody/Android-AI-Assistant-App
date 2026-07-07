@@ -22,15 +22,16 @@ data class AppSettings(
     val darkMode: String = "system", // system | dark | light
     val voiceId: String = "",
     val wakeWordEnabled: Boolean = false,
-    /** Built-in-Keyword-Name oder "CUSTOM" für eine importierte .ppn-Datei */
-    val wakeWordKeyword: String = "COMPUTER",
-    val picovoiceAccessKey: String = "",
-    /** Vom Orchestrator über GET /v1/config bezogener Key (zentrale Verwaltung) */
-    val serverWakeWordKey: String = "",
-    /** Pfad zur importierten eigenen Wake-Word-Datei (.ppn) */
+    /** openWakeWord-Modell: Asset-Dateiname (z. B. "hey_jarvis_v0.1.tflite") oder "CUSTOM" */
+    val wakeWordKeyword: String = "hey_jarvis_v0.1.tflite",
+    /** Pfad zu einem importierten eigenen openWakeWord-Modell (.tflite) */
     val customWakeWordPath: String = "",
-    /** Pfad zum optionalen Sprachmodell (.pv, nötig für z. B. deutsche Wake Words) */
-    val customWakeWordModelPath: String = "",
+    /** Auslöseschwelle 0..100 (Prozent) für den openWakeWord-Klassifikator */
+    val wakeWordThreshold: Int = 50,
+    /** Energiesparen: ML-Pipeline nur laufen lassen, wenn der Mikrofonpegel eine Schwelle übersteigt */
+    val wakeWordEnergyGate: Boolean = true,
+    /** RMS-Schwelle des Energie-Gates */
+    val wakeWordGateRms: Int = 500,
     /** Realtime Talk: Stille-Dauer in ms, nach der automatisch gesendet wird */
     val talkSilenceMs: Int = 900,
     /** Realtime Talk: Lautstärke-Schwelle (RMS) ab der Sprache erkannt wird */
@@ -59,8 +60,9 @@ data class AppSettings(
     val isConfigured: Boolean get() = serverUrl.isNotBlank()
     val isLoggedIn: Boolean get() = authToken.isNotBlank()
 
-    /** Lokal eingetragener Key hat Vorrang, sonst der zentral vom Server bezogene. */
-    val effectiveWakeWordKey: String get() = picovoiceAccessKey.ifBlank { serverWakeWordKey }
+    /** openWakeWord braucht keinen Lizenz-Key — Wake Word ist nutzbar, sobald es eingeschaltet ist. */
+    val wakeWordReady: Boolean
+        get() = wakeWordKeyword != "CUSTOM" || customWakeWordPath.isNotBlank()
 }
 
 class SettingsRepository(private val context: Context) {
@@ -75,10 +77,10 @@ class SettingsRepository(private val context: Context) {
         val VOICE_ID = stringPreferencesKey("voice_id")
         val WAKE_WORD_ENABLED = booleanPreferencesKey("wake_word_enabled")
         val WAKE_WORD_KEYWORD = stringPreferencesKey("wake_word_keyword")
-        val PICOVOICE_KEY = stringPreferencesKey("picovoice_access_key")
-        val SERVER_WAKE_KEY = stringPreferencesKey("server_wake_word_key")
         val CUSTOM_PPN_PATH = stringPreferencesKey("custom_wake_word_path")
-        val CUSTOM_PV_PATH = stringPreferencesKey("custom_wake_word_model_path")
+        val WAKE_WORD_THRESHOLD = intPreferencesKey("wake_word_threshold")
+        val WAKE_WORD_ENERGY_GATE = booleanPreferencesKey("wake_word_energy_gate")
+        val WAKE_WORD_GATE_RMS = intPreferencesKey("wake_word_gate_rms")
         val TALK_SILENCE_MS = intPreferencesKey("talk_silence_ms")
         val TALK_THRESHOLD = intPreferencesKey("talk_threshold")
         val TALK_HALF_DUPLEX = booleanPreferencesKey("talk_half_duplex")
@@ -98,11 +100,11 @@ class SettingsRepository(private val context: Context) {
             darkMode = p[Keys.DARK_MODE] ?: "system",
             voiceId = p[Keys.VOICE_ID] ?: "",
             wakeWordEnabled = p[Keys.WAKE_WORD_ENABLED] ?: false,
-            wakeWordKeyword = p[Keys.WAKE_WORD_KEYWORD] ?: "COMPUTER",
-            picovoiceAccessKey = p[Keys.PICOVOICE_KEY] ?: "",
-            serverWakeWordKey = p[Keys.SERVER_WAKE_KEY] ?: "",
+            wakeWordKeyword = p[Keys.WAKE_WORD_KEYWORD] ?: "hey_jarvis_v0.1.tflite",
             customWakeWordPath = p[Keys.CUSTOM_PPN_PATH] ?: "",
-            customWakeWordModelPath = p[Keys.CUSTOM_PV_PATH] ?: "",
+            wakeWordThreshold = p[Keys.WAKE_WORD_THRESHOLD] ?: 50,
+            wakeWordEnergyGate = p[Keys.WAKE_WORD_ENERGY_GATE] ?: true,
+            wakeWordGateRms = p[Keys.WAKE_WORD_GATE_RMS] ?: 500,
             talkSilenceMs = p[Keys.TALK_SILENCE_MS] ?: 900,
             talkThreshold = p[Keys.TALK_THRESHOLD] ?: 400,
             talkHalfDuplex = p[Keys.TALK_HALF_DUPLEX] ?: false,
@@ -136,10 +138,10 @@ class SettingsRepository(private val context: Context) {
     suspend fun setVoiceId(id: String) = edit { it[Keys.VOICE_ID] = id }
     suspend fun setWakeWordEnabled(enabled: Boolean) = edit { it[Keys.WAKE_WORD_ENABLED] = enabled }
     suspend fun setWakeWordKeyword(keyword: String) = edit { it[Keys.WAKE_WORD_KEYWORD] = keyword }
-    suspend fun setPicovoiceKey(key: String) = edit { it[Keys.PICOVOICE_KEY] = key }
-    suspend fun setServerWakeWordKey(key: String) = edit { it[Keys.SERVER_WAKE_KEY] = key }
     suspend fun setCustomWakeWordPath(path: String) = edit { it[Keys.CUSTOM_PPN_PATH] = path }
-    suspend fun setCustomWakeWordModelPath(path: String) = edit { it[Keys.CUSTOM_PV_PATH] = path }
+    suspend fun setWakeWordThreshold(pct: Int) = edit { it[Keys.WAKE_WORD_THRESHOLD] = pct.coerceIn(5, 95) }
+    suspend fun setWakeWordEnergyGate(enabled: Boolean) = edit { it[Keys.WAKE_WORD_ENERGY_GATE] = enabled }
+    suspend fun setWakeWordGateRms(rms: Int) = edit { it[Keys.WAKE_WORD_GATE_RMS] = rms.coerceIn(50, 3000) }
     suspend fun setTalkSilenceMs(ms: Int) = edit { it[Keys.TALK_SILENCE_MS] = ms.coerceIn(300, 5000) }
     suspend fun setTalkThreshold(rms: Int) = edit { it[Keys.TALK_THRESHOLD] = rms.coerceIn(50, 4000) }
     suspend fun setTalkHalfDuplex(enabled: Boolean) = edit { it[Keys.TALK_HALF_DUPLEX] = enabled }

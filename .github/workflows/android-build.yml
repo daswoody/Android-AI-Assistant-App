@@ -28,6 +28,20 @@ jobs:
       - name: Android SDK einrichten
         uses: android-actions/setup-android@v3
 
+      # openWakeWord-Modelle (TFLite) in die App-Assets laden. Bewusst NICHT im Git
+      # (Binärdateien) — der Runner hat Internet und zieht sie beim Build.
+      - name: openWakeWord-Modelle laden
+        run: |
+          set -euo pipefail
+          dir="app/src/main/assets/openwakeword"
+          mkdir -p "$dir"
+          base="https://github.com/dscripka/openWakeWord/releases/download/v0.5.1"
+          for m in melspectrogram embedding_model alexa_v0.1 hey_jarvis_v0.1 hey_mycroft_v0.1; do
+            echo "Lade $m.tflite"
+            curl -fSL --retry 4 --retry-delay 3 -o "$dir/$m.tflite" "$base/$m.tflite"
+          done
+          ls -la "$dir"
+
       - name: Debug-APK bauen
         run: ./gradlew --no-daemon assembleDebug
 

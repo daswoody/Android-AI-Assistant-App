@@ -58,7 +58,7 @@ import de.heimai.app.core.AppContainer
 import de.heimai.app.core.network.Voice
 import de.heimai.app.core.settings.AppSettings
 import de.heimai.app.ui.theme.THEMES
-import de.heimai.app.wakeword.PorcupineEngine
+import de.heimai.app.wakeword.OpenWakeWordEngine
 import de.heimai.app.wakeword.WakeWordImport
 import de.heimai.app.wakeword.WakeWordService
 import kotlinx.coroutines.launch
@@ -212,8 +212,6 @@ fun AiSettingsScreen(onBack: () -> Unit) {
         runCatching { container.api.voices() }
             .onSuccess { voices = it.voices }
             .onFailure { voicesError = "Stimmen nicht abrufbar (Server offline?)" }
-        // Zentrale Client-Config (u. a. Wake-Word-AccessKey) vom Orchestrator holen
-        container.api.syncClientConfig()
     }
 
     val micLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -223,7 +221,7 @@ fun AiSettingsScreen(onBack: () -> Unit) {
         }
     }
 
-    // Phrase wechseln: Setting schreiben, DANN (falls aktiv) Dienst mit neuer
+    // Modell wechseln: Setting schreiben, DANN (falls aktiv) Dienst mit neuer
     // Konfiguration neu starten — der Service baut die Engine bei jedem Start frisch auf.
     fun selectKeyword(kw: String) {
         scope.launch {
@@ -232,22 +230,13 @@ fun AiSettingsScreen(onBack: () -> Unit) {
         }
     }
 
-    // Import eigener Wake-Word-Dateien (.ppn Keyword, optional .pv Sprachmodell)
-    val ppnLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+    // Import eines eigenen openWakeWord-Modells (.tflite)
+    val modelLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
-            val path = WakeWordImport.copyToStorage(context, uri, "custom.ppn")
+            val path = WakeWordImport.copyToStorage(context, uri, "custom_wakeword.tflite")
             if (path != null) scope.launch {
                 container.settings.setCustomWakeWordPath(path)
-                container.settings.setWakeWordKeyword(PorcupineEngine.CUSTOM)
-                if (settings.wakeWordEnabled) WakeWordService.start(context)
-            }
-        }
-    }
-    val pvLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            val path = WakeWordImport.copyToStorage(context, uri, "custom.pv")
-            if (path != null) scope.launch {
-                container.settings.setCustomWakeWordModelPath(path)
+                container.settings.setWakeWordKeyword(OpenWakeWordEngine.CUSTOM)
                 if (settings.wakeWordEnabled) WakeWordService.start(context)
             }
         }
@@ -350,21 +339,21 @@ fun AiSettingsScreen(onBack: () -> Unit) {
         }
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
 
-        // --- Wake Word ---
+        // --- Wake Word (openWakeWord, frei, kein Lizenz-Key) ---
         Text("Wake Word", style = MaterialTheme.typography.titleSmall)
-        val wakeKey = settings.effectiveWakeWordKey
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("Wake-Word-Erkennung")
                 Text(
-                    "Dauerhaft lauschender, energiesparender Dienst (Porcupine, lokal)",
+                    "Lokal & offline mit openWakeWord (TensorFlow Lite). Energiesparend: die " +
+                        "Erkennung läuft nur, wenn Geräusch anliegt.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             Switch(
                 checked = settings.wakeWordEnabled,
-                enabled = wakeKey.isNotBlank(),
+                enabled = settings.wakeWordReady,
                 onCheckedChange = { enable ->
                     if (enable) {
                         val granted = context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
@@ -382,79 +371,85 @@ fun AiSettingsScreen(onBack: () -> Unit) {
                 },
             )
         }
-        Text(
-            when {
-                settings.picovoiceAccessKey.isNotBlank() -> "Lizenz-Key: lokal hinterlegt"
-                settings.serverWakeWordKey.isNotBlank() -> "Lizenz-Key: zentral vom Server bereitgestellt ✓"
-                else -> "Kein Lizenz-Key verfügbar. Der Server stellt ihn normalerweise " +
-                    "bereit (GET /v1/config); optional unten selbst eintragen."
-            },
-            style = MaterialTheme.typography.bodySmall,
-            color = if (wakeKey.isBlank()) MaterialTheme.colorScheme.error
-            else MaterialTheme.colorScheme.onSurfaceVariant,
-        )
         Spacer(Modifier.height(8.dp))
 
-        Text("Wake-Word-Phrase", style = MaterialTheme.typography.labelMedium)
-        PorcupineEngine.KEYWORDS.forEach { keyword ->
+        Text("Wake-Word-Modell", style = MaterialTheme.typography.labelMedium)
+        OpenWakeWordEngine.BUILT_IN.forEach { (label, asset) ->
             Row(
-                Modifier.fillMaxWidth().clickable { selectKeyword(keyword) }.padding(vertical = 0.dp),
+                Modifier.fillMaxWidth().clickable { selectKeyword(asset) }.padding(vertical = 0.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 RadioButton(
-                    selected = settings.wakeWordKeyword == keyword,
-                    onClick = { selectKeyword(keyword) },
+                    selected = settings.wakeWordKeyword == asset,
+                    onClick = { selectKeyword(asset) },
                 )
-                Text(keyword.lowercase().replaceFirstChar { it.uppercase() })
+                Text(label)
             }
         }
-        // Eigenes Wake Word (.ppn)
+        // Eigenes openWakeWord-Modell (.tflite)
         Row(
             Modifier.fillMaxWidth().clickable {
-                if (settings.customWakeWordPath.isNotBlank()) selectKeyword(PorcupineEngine.CUSTOM)
-                else ppnLauncher.launch(arrayOf("*/*"))
+                if (settings.customWakeWordPath.isNotBlank()) selectKeyword(OpenWakeWordEngine.CUSTOM)
+                else modelLauncher.launch(arrayOf("*/*"))
             }.padding(vertical = 0.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             RadioButton(
-                selected = settings.wakeWordKeyword == PorcupineEngine.CUSTOM,
+                selected = settings.wakeWordKeyword == OpenWakeWordEngine.CUSTOM,
                 enabled = settings.customWakeWordPath.isNotBlank(),
-                onClick = { selectKeyword(PorcupineEngine.CUSTOM) },
+                onClick = { selectKeyword(OpenWakeWordEngine.CUSTOM) },
             )
             Text(
-                if (settings.customWakeWordPath.isNotBlank()) "Eigenes Wake Word (importiert)"
-                else "Eigenes Wake Word …"
+                if (settings.customWakeWordPath.isNotBlank()) "Eigenes Modell (importiert)"
+                else "Eigenes Modell …"
             )
         }
         Text(
-            "Eigene Phrasen werden auf console.picovoice.ai als .ppn-Datei erstellt " +
-                "(für Deutsch zusätzlich das passende .pv-Sprachmodell importieren).",
+            "Eigene Wake Words trainierst du kostenlos mit openWakeWord (auch deutsch) und " +
+                "importierst die .tflite-Datei hier.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-            OutlinedButton(
-                onClick = { ppnLauncher.launch(arrayOf("*/*")) },
-                modifier = Modifier.weight(1f).padding(end = 4.dp),
-            ) { Text(if (settings.customWakeWordPath.isBlank()) ".ppn wählen" else ".ppn ersetzen") }
-            OutlinedButton(
-                onClick = { pvLauncher.launch(arrayOf("*/*")) },
-                modifier = Modifier.weight(1f).padding(start = 4.dp),
-            ) { Text(if (settings.customWakeWordModelPath.isBlank()) ".pv (Sprache)" else ".pv ersetzen") }
-        }
-
-        // Optionaler eigener AccessKey (Override des zentralen Keys)
-        var keyInput by remember { mutableStateOf<String?>(null) }
-        OutlinedTextField(
-            value = keyInput ?: settings.picovoiceAccessKey,
-            onValueChange = {
-                keyInput = it
-                scope.launch { container.settings.setPicovoiceKey(it.trim()) }
-            },
-            label = { Text("Eigener Picovoice AccessKey (optional)") },
-            singleLine = true,
+        OutlinedButton(
+            onClick = { modelLauncher.launch(arrayOf("*/*")) },
             modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        ) { Text(if (settings.customWakeWordPath.isBlank()) "Eigenes .tflite wählen" else ".tflite ersetzen") }
+
+        Spacer(Modifier.height(8.dp))
+        Text("Empfindlichkeit: ${settings.wakeWordThreshold}%", style = MaterialTheme.typography.bodyMedium)
+        Text(
+            "Höher = weniger Fehlauslöser, aber du musst evtl. deutlicher sprechen.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        Slider(
+            value = settings.wakeWordThreshold.toFloat(),
+            onValueChange = { scope.launch { container.settings.setWakeWordThreshold(it.roundToInt()) } },
+            // Engine erst beim Loslassen neu aufbauen (nicht bei jedem Slider-Tick)
+            onValueChangeFinished = { if (settings.wakeWordEnabled) WakeWordService.start(context) },
+            valueRange = 5f..95f,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Energiesparen (Pegel-Gate)")
+                Text(
+                    "ML-Erkennung nur bei Geräusch aktivieren. Aus = etwas empfindlicher, " +
+                        "aber höherer Verbrauch.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = settings.wakeWordEnergyGate,
+                onCheckedChange = {
+                    scope.launch {
+                        container.settings.setWakeWordEnergyGate(it)
+                        if (settings.wakeWordEnabled) WakeWordService.start(context)
+                    }
+                },
+            )
+        }
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
 
         // --- Rechte ---

@@ -11,3 +11,5 @@ captures/
 *.aab
 *.keystore
 !debug.keystore
+# openWakeWord-Modelle werden im CI-Build geladen, nicht eingecheckt
+app/src/main/assets/openwakeword/

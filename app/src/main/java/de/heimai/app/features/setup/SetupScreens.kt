@@ -147,7 +147,6 @@ fun LoginScreen(onChangeServer: () -> Unit, onLoggedIn: () -> Unit) {
                         )
                         container.settings.setAuth(response.token, response.user.name, response.user.tier)
                         container.cardLayouts.sync()
-                        container.api.syncClientConfig()
                         onLoggedIn()
                     } catch (e: Exception) {
                         error = "Login fehlgeschlagen: ${e.message}"

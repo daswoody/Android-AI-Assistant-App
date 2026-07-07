@@ -34,13 +34,6 @@ data class Voice(val id: String, val name: String)
 @Serializable
 data class VoicesResponse(val voices: List<Voice>)
 
-@Serializable
-data class WakeWordServerConfig(val access_key: String? = null)
-
-/** Zentrale Client-Konfiguration vom Orchestrator (GET /v1/config). */
-@Serializable
-data class ClientConfig(val wake_word: WakeWordServerConfig? = null)
-
 class ApiException(message: String, val code: Int = 0) : IOException(message)
 
 /**
@@ -72,25 +65,6 @@ class ApiClient(
     suspend fun voices(): VoicesResponse {
         val base = settings.current().serverUrl
         return get("$base/v1/voices")
-    }
-
-    suspend fun clientConfig(): ClientConfig {
-        val base = settings.current().serverUrl
-        return get("$base/v1/config")
-    }
-
-    /**
-     * Zentrale Konfiguration abholen und lokal übernehmen (z. B. der
-     * Picovoice-AccessKey für das Wake Word, damit Nutzer keinen eigenen
-     * Key eintragen müssen). Fehler sind unkritisch: Server älter/offline
-     * → lokale Werte bleiben bestehen.
-     */
-    suspend fun syncClientConfig() {
-        runCatching { clientConfig() }.onSuccess { config ->
-            config.wake_word?.access_key?.takeIf { it.isNotBlank() }?.let {
-                settings.setServerWakeWordKey(it)
-            }
-        }
     }
 
     private suspend inline fun <reified T> get(url: String, auth: Boolean = true): T =
