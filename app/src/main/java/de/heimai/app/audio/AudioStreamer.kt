@@ -22,16 +22,20 @@ class AudioStreamer(
 ) {
     /**
      * @param source Aufnahmequelle. Push-to-Talk nutzt VOICE_RECOGNITION (roher, für
-     *   STT optimiert). Der Realtime-Talk mit gleichzeitiger Wiedergabe nutzt
-     *   VOICE_COMMUNICATION, weil dieser Pfad die Plattform-Echo-Unterdrückung (AEC)
-     *   aktiviert — sonst nimmt das Mikro im Freisprechbetrieb die eigene Antwort auf.
-     *   Zusätzlich werden, falls verfügbar, AcousticEchoCanceler + NoiseSuppressor auf
-     *   die AudioRecord-Session gelegt.
+     *   STT optimiert). Der Realtime-Talk mit Echo-Unterdrückung nutzt
+     *   VOICE_COMMUNICATION (Kommunikationspfad mit Plattform-AEC).
+     * @param enableEffects Software-`AcousticEchoCanceler`/`NoiseSuppressor` auf die
+     *   Session legen. NUR im Nicht-Kommunikationspfad sinnvoll — im Kommunikationsmodus
+     *   macht die Plattform das bereits; ein zweiter AEC-Effekt darauf destabilisiert
+     *   den Audio-HAL (Absturz nach wenigen Turns). Dort also false übergeben.
      *
      * RECORD_AUDIO muss vor dem Collect bereits erteilt sein.
      */
     @SuppressLint("MissingPermission")
-    fun stream(source: Int = MediaRecorder.AudioSource.VOICE_RECOGNITION): Flow<ByteArray> = flow {
+    fun stream(
+        source: Int = MediaRecorder.AudioSource.VOICE_RECOGNITION,
+        enableEffects: Boolean = true,
+    ): Flow<ByteArray> = flow {
         val minBuffer = AudioRecord.getMinBufferSize(
             sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
         )
@@ -47,10 +51,10 @@ class AudioStreamer(
             record.release()
             throw IllegalStateException("AudioRecord konnte nicht initialisiert werden")
         }
-        val aec = if (AcousticEchoCanceler.isAvailable())
+        val aec = if (enableEffects && AcousticEchoCanceler.isAvailable())
             runCatching { AcousticEchoCanceler.create(record.audioSessionId)?.apply { enabled = true } }.getOrNull()
         else null
-        val ns = if (NoiseSuppressor.isAvailable())
+        val ns = if (enableEffects && NoiseSuppressor.isAvailable())
             runCatching { NoiseSuppressor.create(record.audioSessionId)?.apply { enabled = true } }.getOrNull()
         else null
         try {

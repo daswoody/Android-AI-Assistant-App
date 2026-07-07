@@ -25,37 +25,44 @@ class AudioPlayer {
 
     @Synchronized
     fun play(pcm: ByteArray, sampleRate: Int) {
-        if (track == null || currentSampleRate != sampleRate || builtCommunication != communication) {
-            release()
-            currentSampleRate = sampleRate
-            builtCommunication = communication
-            val minBuffer = AudioTrack.getMinBufferSize(
-                sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT
-            )
-            val attributes = if (communication) {
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build()
-            } else {
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ASSISTANT)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build()
+        runCatching {
+            if (track == null || currentSampleRate != sampleRate || builtCommunication != communication) {
+                release()
+                currentSampleRate = sampleRate
+                builtCommunication = communication
+                val minBuffer = AudioTrack.getMinBufferSize(
+                    sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT
+                )
+                val attributes = if (communication) {
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                } else {
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                }
+                track = AudioTrack(
+                    attributes,
+                    AudioFormat.Builder()
+                        .setSampleRate(sampleRate)
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .build(),
+                    maxOf(minBuffer, sampleRate), // ~0,5 s Puffer
+                    AudioTrack.MODE_STREAM,
+                    android.media.AudioManager.AUDIO_SESSION_ID_GENERATE,
+                ).also { it.play() }
             }
-            track = AudioTrack(
-                attributes,
-                AudioFormat.Builder()
-                    .setSampleRate(sampleRate)
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                    .build(),
-                maxOf(minBuffer, sampleRate), // ~0,5 s Puffer
-                AudioTrack.MODE_STREAM,
-                android.media.AudioManager.AUDIO_SESSION_ID_GENERATE,
-            ).also { it.play() }
+            track?.write(pcm, 0, pcm.size)
+        }.onFailure {
+            // Audio-HAL-Fehler dürfen die App nicht abstürzen lassen — Track verwerfen,
+            // beim nächsten Chunk wird neu aufgebaut.
+            android.util.Log.w("AudioPlayer", "Wiedergabe-Fehler: ${it.message}")
+            release()
         }
-        track?.write(pcm, 0, pcm.size)
     }
 
     @Synchronized

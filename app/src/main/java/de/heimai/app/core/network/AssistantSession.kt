@@ -197,7 +197,9 @@ class AssistantSession(
             var bargeChunks = 0
             val preRoll = ArrayDeque<ByteArray>()
             try {
-                streamer.stream(source).collect { chunk ->
+                // Im Kommunikationsmodus macht die Plattform AEC/NS — keine zweite Software-AEC
+                // darauflegen (sonst Audio-HAL-Instabilität/Absturz).
+                streamer.stream(source, enableEffects = !useAec).collect { chunk ->
                     if (!continuous) {
                         sendAudioChunk(chunk)
                         return@collect
@@ -317,6 +319,11 @@ class AssistantSession(
     }
 
     private fun handleMessage(text: String) {
+        runCatching { dispatchMessage(text) }
+            .onFailure { android.util.Log.w("AssistantSession", "Nachricht verworfen: ${it.message}") }
+    }
+
+    private fun dispatchMessage(text: String) {
         val obj = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return
         when (obj["type"]?.jsonPrimitive?.content) {
             "transcript" -> {
