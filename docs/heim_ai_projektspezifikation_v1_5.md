@@ -260,11 +260,14 @@ Begründung — die Kern-Anforderungen der App sind tief im Android-System veran
 
 **Windows (Phase 2.5): separater nativer Client** (Empfehlung: .NET/WinUI oder Tauri — finale Entscheidung bei 2.5). Die "zentrale Karten-Definition" wird NICHT über ein gemeinsames UI-Framework gelöst, sondern über das **plattformneutrale Karten-Format** (4.12): beide Apps interpretieren dasselbe JSON.
 
-**Wake-Word-Engine: Picovoice Porcupine** (entschieden, war offener Punkt):
-- Kostenlos für Personal Use, sehr geringer CPU-/Akku-Verbrauch, stabile Android-Integration (Maven Central: `ai.picovoice:porcupine-android`)
-- Benötigt einen **AccessKey** (console.picovoice.ai). Porcupine rechnet zwar 100 % lokal (kein Audio verlässt das Gerät), der Key ist aber Picovoices Lizenz-/Attestierungsmechanismus — die Engine startet ohne gültigen Key nicht. **Konsequenz für die zentrale Verwaltung:** Der Key wird vom Orchestrator ausgeliefert (`GET /v1/config` → `wake_word.access_key`); Endnutzer müssen nichts eintragen. Ein lokal in den Einstellungen hinterlegter Key hat Vorrang (Override für Entwickler)
-- Built-in-Keywords wählbar (Computer, Jarvis, Porcupine, Bumblebee, Terminator); **eigene Phrase** über die Picovoice-Konsole als `.ppn` erstellt und in den App-Einstellungen importierbar (für Deutsch zusätzlich das `.pv`-Sprachmodell); die Datei wird in den App-internen Speicher kopiert, da Porcupine einen Dateipfad braucht
-- Die App kapselt die Engine hinter einem `WakeWordEngine`-Interface, damit später openWakeWord/microWakeWord (ESP32-Parität) nachgerüstet werden kann
+**Wake-Word-Engine: openWakeWord** (Umstieg von Picovoice Porcupine, weil Picovoice keine Lizenz bereitstellt):
+- **Frei & lokal, KEIN Lizenz-Key** (das war der Blocker bei Porcupine). Läuft komplett on-device über TensorFlow Lite (`org.tensorflow:tensorflow-lite`, Maven Central).
+- Pipeline: 16-kHz-Audio → `melspectrogram.tflite` → `embedding_model.tflite` → `<wakeword>.tflite` → Wahrscheinlichkeit. Tensor-Formen werden zur Laufzeit aus den Modellen gelesen (robust ggü. Modell-Versionen).
+- **Energiesparen (Pflicht-Anforderung):** RMS-**Energie-Gate** — die teure ML-Pipeline läuft nur, wenn der Mikrofonpegel eine Schwelle übersteigt (plus kurze Nachlaufzeit); ein Pre-Roll-Puffer (~640 ms) stellt sicher, dass der leise Wortanfang trotzdem verarbeitet wird. Bei Stille kostet nur das offene Mikrofon + RMS Strom. In den Einstellungen abschaltbar.
+- **Modelle**: mitgeliefert werden Alexa / Hey Jarvis / Hey Mycroft (openWakeWord-Releases). Sie werden bewusst NICHT eingecheckt, sondern im **CI-Build** in `assets/openwakeword/` geladen (Binärdateien raus aus Git). **Eigene Wake Words** (auch deutsch) trainiert man kostenlos mit openWakeWord und importiert die `.tflite`-Datei in der App.
+- Einstellbar: Modellwahl, **Empfindlichkeit** (Threshold-Slider), Energie-Gate an/aus.
+- Weiterhin hinter dem `WakeWordEngine`-Interface (`OpenWakeWordEngine`), damit später microWakeWord (ESP32-Parität) nachgerüstet werden kann.
+- **Offen:** On-Device-Feintuning der Erkennungsschwelle (in der Build-Umgebung nicht testbar).
 
 **App-interne Architektur-Eckpunkte:** Single-Module Kotlin/Compose-Projekt, manueller DI-Container (bewusst kein Hilt — weniger Build-Magie), Room für Verlauf + Layout-Cache, DataStore für Settings, OkHttp für REST + WebSocket, kotlinx.serialization. APK-Build über GitHub Actions (Debug-Signatur, Sideload-fähig).
 
@@ -291,7 +294,7 @@ Verbindlicher Vertrag in `docs/PROTOCOL.md` (App-Repo). **Die App ist fertig geb
 - `POST /v1/auth/login` `{username, password, device_name}` → `{token, user:{name, tier}}` (Bearer-Token für alles Weitere)
 - `GET /v1/voices` — Stimmen für die Stimmauswahl
 - `GET /v1/cards/layouts?since_version=N` — Karten-Layouts (4.12)
-- `GET /v1/config` — **zentrale Client-Konfiguration** (u. a. `wake_word.access_key`), damit Endnutzer keine eigenen Keys pflegen müssen (siehe 4.11)
+- *(entfallen: `GET /v1/config` — wurde nur für den Picovoice-Key gebraucht; openWakeWord braucht keinen Key, siehe 4.11)*
 
 **WebSocket `/v1/assistant/stream`** (JSON-Frames; Audio als Base64-PCM16 — Client sendet 16 kHz für Whisper, Server antwortet mit `sample_rate`-Angabe, typisch 24 kHz XTTS):
 - Client → Server: `hello` (mit Mode chat|talk|assist, voice_id und **Geräte-Tool-Manifest**), `text_input`, `audio_chunk`/`audio_end`, `interrupt` (Barge-in), `tool_result`

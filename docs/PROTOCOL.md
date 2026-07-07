@@ -44,19 +44,9 @@ Verfügbare TTS-Stimmen für die Stimmauswahl in den AI-Einstellungen.
 { "voices": [ { "id": "xtts-anna", "name": "Anna (XTTS-v2)" } ] }
 ```
 
-### `GET /v1/config`
-**Zentrale Client-Konfiguration.** Damit Endnutzer keine eigenen Keys
-verwalten müssen, liefert der Orchestrator hier u. a. den Picovoice-
-AccessKey für das Wake Word aus (Porcupine rechnet lokal, der Key ist
-aber Picovoices Lizenzmechanismus). Die App übernimmt ihn beim App-Start
-und nach dem Login; ein lokal eingetragener Key hat Vorrang.
-
-```json
-{ "wake_word": { "access_key": "pv-xxxxxxxxxxxx" } }
-```
-Felder optional — fehlt `wake_word.access_key`, bleibt der zuletzt
-bekannte Wert erhalten. Server ohne diesen Endpoint sind unkritisch
-(die App fängt den Fehler ab).
+> **Entfallen:** `GET /v1/config` (lieferte früher den Picovoice-AccessKey).
+> Das Wake Word nutzt jetzt **openWakeWord** (frei, kein Lizenz-Key) — der
+> Endpoint wird nicht mehr benötigt.
 
 ### `GET /v1/cards/layouts?since_version=N`
 **Card-Layout-Server** (zentrale Karten-Verwaltung, siehe Spez. 4.12).
