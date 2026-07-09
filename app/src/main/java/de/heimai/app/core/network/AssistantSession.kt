@@ -72,13 +72,22 @@ class AssistantSession(
     private val audioSession: AudioSessionController,
     /** chat | talk | assist — rein informativ für den Server */
     private val mode: String,
+    /** Server-Konversation fortsetzen (zentrale Historie); null = neues Gespräch */
+    initialConversationId: String? = null,
     private val listener: Listener? = null,
 ) {
     interface Listener {
         fun onUserText(text: String) {}
         fun onAssistantText(text: String) {}
         fun onCard(card: CardEnvelope) {}
+        /** Server hat dieser Sitzung eine Konversation zugeordnet (zentrale Historie). */
+        fun onConversation(id: String) {}
     }
+
+    /** Vom Server vergebene/fortgesetzte Konversations-Id (zentrale Historie). */
+    @Volatile
+    var conversationId: String? = initialConversationId
+        private set
 
     private val _state = MutableStateFlow(SessionState())
     val state: StateFlow<SessionState> = _state.asStateFlow()
@@ -208,9 +217,14 @@ class AssistantSession(
                     _micLevel.value = rms.toFloat()
                     val threshold = vadThreshold
                     val isVoice = rms > threshold
-                    // Läuft die eigene Antwort (oder klingt gerade aus)?
-                    val guarding = _state.value.speaking ||
-                        (System.currentTimeMillis() - lastServerAudioAtMs) < PLAYBACK_TAIL_MS
+                    // Echo-Schutzfenster: solange die eigene Antwort läuft ODER der lokale
+                    // Audio-Puffer noch abspielt (Server-audio_end kommt bis ~1 s bevor der
+                    // Lautsprecher wirklich still ist!) — plus Nachhall-Tail danach.
+                    val now = System.currentTimeMillis()
+                    val playbackActive = _state.value.speaking || player.isDraining()
+                    if (playbackActive) lastServerAudioAtMs = now
+                    val guarding = playbackActive ||
+                        (now - lastServerAudioAtMs) < PLAYBACK_TAIL_MS
 
                     // Half-Duplex: während der eigenen Antwort Mikrofon komplett ignorieren
                     // (kein Barge-in, dafür garantiert kein Selbst-Mithören).
@@ -303,6 +317,8 @@ class AssistantSession(
                 put("type", "hello")
                 put("mode", mode)
                 put("voice_id", s.voiceId)
+                // Zentrale Historie: bestehendes Gespräch serverseitig fortsetzen
+                conversationId?.let { put("conversation_id", it) }
                 put("device", buildJsonObject {
                     put("platform", "android")
                     put("name", android.os.Build.MODEL)
@@ -362,6 +378,11 @@ class AssistantSession(
                 player.play(Base64.decode(data, Base64.NO_WRAP), rate)
             }
             "audio_end" -> _state.value = _state.value.copy(speaking = false)
+            "conversation" -> {
+                val id = obj["conversation_id"]?.jsonPrimitive?.content ?: return
+                conversationId = id
+                listener?.onConversation(id)
+            }
             "card" -> {
                 val cardObj = obj["card"] ?: return
                 runCatching {
@@ -495,6 +516,6 @@ class AssistantSession(
         const val BARGE_LOUD_FACTOR = 2.5        // Unterbrechung während Wiedergabe muss deutlich lauter sein (Echo-Schutz)
         const val PREROLL_CHUNKS = 3             // ~300 ms Vorlauf vor Sprechbeginn mitsenden
         const val BARGE_MIN_CHUNKS = 3           // ~300 ms Stimme nötig, um laufende Antwort zu unterbrechen
-        const val PLAYBACK_TAIL_MS = 500L        // Ausklang-Fenster nach letztem Server-Audio (AudioPlayer-Puffer)
+        const val PLAYBACK_TAIL_MS = 800L        // Nachhall-Fenster NACH tatsächlichem Wiedergabe-Ende (Raumecho)
     }
 }

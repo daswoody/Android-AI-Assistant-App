@@ -67,7 +67,7 @@ fun TalkScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val viewModel: ChatViewModel = viewModel(
         key = "talk",
-        factory = ChatViewModel.factory(0L, mode = "talk"),
+        factory = ChatViewModel.factory(null, mode = "talk"),
     )
     val container = HeimAiApp.from(context.applicationContext as Application).container
     val scope = androidx.compose.runtime.rememberCoroutineScope()

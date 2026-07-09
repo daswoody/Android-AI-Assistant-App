@@ -8,30 +8,13 @@ import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.RoomDatabase
-import kotlinx.coroutines.flow.Flow
 
-@Entity(tableName = "conversations")
-data class ConversationEntity(
-    @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val title: String,
-    /** chat | talk | assistant */
-    val source: String,
-    val createdAt: Long,
-    val updatedAt: Long,
-)
-
-@Entity(tableName = "messages")
-data class MessageEntity(
-    @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val conversationId: Long,
-    /** user | assistant | tool */
-    val role: String,
-    val text: String,
-    /** Serialisierte Card-Envelope (JSON), falls die Nachricht eine Karte trägt */
-    val cardJson: String? = null,
-    val createdAt: Long,
-)
-
+/**
+ * Lokale DB — seit der zentralen Chat-Historie (Server besitzt die Gespräche)
+ * nur noch Cache für die Karten-Layouts. Die früheren conversations/messages-
+ * Tabellen sind entfallen (Version 2, destruktive Migration ist ok: der Cache
+ * baut sich aus Assets + Server-Sync neu auf).
+ */
 @Entity(tableName = "card_layouts")
 data class CardLayoutEntity(
     /** card_type, z. B. "weather" */
@@ -40,39 +23,6 @@ data class CardLayoutEntity(
     /** Komplettes LayoutTemplate als JSON */
     val templateJson: String,
 )
-
-@Dao
-interface ConversationDao {
-    @Query("SELECT * FROM conversations ORDER BY updatedAt DESC")
-    fun observeAll(): Flow<List<ConversationEntity>>
-
-    @Query("SELECT * FROM conversations WHERE id = :id")
-    suspend fun get(id: Long): ConversationEntity?
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsert(conversation: ConversationEntity): Long
-
-    @Query("UPDATE conversations SET title = :title, updatedAt = :updatedAt WHERE id = :id")
-    suspend fun touch(id: Long, title: String, updatedAt: Long)
-
-    @Query("DELETE FROM conversations WHERE id = :id")
-    suspend fun delete(id: Long)
-}
-
-@Dao
-interface MessageDao {
-    @Query("SELECT * FROM messages WHERE conversationId = :conversationId ORDER BY createdAt ASC, id ASC")
-    fun observeForConversation(conversationId: Long): Flow<List<MessageEntity>>
-
-    @Query("SELECT * FROM messages WHERE conversationId = :conversationId ORDER BY createdAt ASC, id ASC")
-    suspend fun forConversation(conversationId: Long): List<MessageEntity>
-
-    @Insert
-    suspend fun insert(message: MessageEntity): Long
-
-    @Query("DELETE FROM messages WHERE conversationId = :conversationId")
-    suspend fun deleteForConversation(conversationId: Long)
-}
 
 @Dao
 interface CardLayoutDao {
@@ -87,12 +37,10 @@ interface CardLayoutDao {
 }
 
 @Database(
-    entities = [ConversationEntity::class, MessageEntity::class, CardLayoutEntity::class],
-    version = 1,
+    entities = [CardLayoutEntity::class],
+    version = 2,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
-    abstract fun conversationDao(): ConversationDao
-    abstract fun messageDao(): MessageDao
     abstract fun cardLayoutDao(): CardLayoutDao
 }

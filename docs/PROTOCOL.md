@@ -48,6 +48,20 @@ Verfügbare TTS-Stimmen für die Stimmauswahl in den AI-Einstellungen.
 > Das Wake Word nutzt jetzt **openWakeWord** (frei, kein Lizenz-Key) — der
 > Endpoint wird nicht mehr benötigt.
 
+### Zentrale Chat-Historie (`/v1/conversations`)
+**Der Server besitzt die Gespräche, Clients sind Ansichten** — Browser-Frontend,
+Android und Windows sehen dieselbe Historie. Die App speichert Verläufe nicht
+mehr lokal; jeder Turn wird serverseitig im Stream-Router persistiert.
+
+- `GET /v1/conversations` → `{ "conversations": [ { "id", "title", "device_name", "message_count", "created_at", "updated_at" } ] }`
+- `GET /v1/conversations/{id}` → zusätzlich `"messages": [ { "id", "role", "content", "cards": [CardEnvelope…], "has_image", "created_at" } ]`
+- `DELETE /v1/conversations/{id}` → `{ "ok": true }`
+
+Sichtbarkeit: strikt nur eigene Gespräche (Username aus dem Token); fremde
+IDs liefern 404. Fortsetzen: die App schickt die `conversation_id` im
+WebSocket-`hello` mit (siehe 2.1); der Server bestätigt bzw. vergibt die Id
+mit einem eigenen Frame (siehe 2.2).
+
 ### `GET /v1/cards/layouts?since_version=N`
 **Card-Layout-Server** (zentrale Karten-Verwaltung, siehe Spez. 4.12).
 Liefert alle Layout-Templates, wenn sich seit `N` etwas geändert hat,
@@ -81,7 +95,7 @@ typisch 24000 bei XTTS-v2).
 
 | type | Felder | Bedeutung |
 |---|---|---|
-| `hello` | `mode` (chat\|talk\|assist), `voice_id`, `device{platform,name,app_version}`, `capabilities{audio_in,audio_out,cards}`, `tools[]` | Erste Nachricht nach Connect. `tools` = Manifest der Geräte-Tools (siehe 2.3) |
+| `hello` | `mode` (chat\|talk\|assist), `voice_id`, `conversation_id?`, `device{platform,name,app_version}`, `capabilities{audio_in,audio_out,cards}`, `tools[]` | Erste Nachricht nach Connect. `tools` = Manifest der Geräte-Tools (siehe 2.3); `conversation_id` setzt ein bestehendes Gespräch der zentralen Historie fort |
 | `text_input` | `text` | Texteingabe statt Sprache |
 | `audio_chunk` | `data` (b64 PCM16/16k) | ~100-ms-Mikrofon-Chunk |
 | `audio_end` | – | Äußerung beendet. Push-to-Talk: beim Loslassen. **Realtime Talk:** die App erkennt Sprechpausen client-seitig (VAD) und sendet `audio_end` automatisch nach einer einstellbaren Stille (Default 900 ms); danach bleibt der Socket offen für die nächste Äußerung |
@@ -93,6 +107,7 @@ typisch 24000 bei XTTS-v2).
 | type | Felder | Bedeutung |
 |---|---|---|
 | `session` | `session_id` | Optional, nach hello |
+| `conversation` | `conversation_id` | Zentrale Historie: Id des (neu angelegten oder fortgesetzten) Gesprächs — damit findet die App es später über `GET /v1/conversations/{id}` wieder |
 | `transcript` | `text`, `final` (bool) | STT-Zwischenstand / final |
 | `assistant_text` | `text`, `final` (bool) | Antwort-Text; Deltas mit `final:false`, Abschluss `final:true` (bei `final:true` darf `text` der Volltext sein, sonst leer) |
 | `audio_chunk` | `data` (b64 PCM16), `sample_rate` | TTS-Audio-Stream (Filler über Piper zuerst, dann XTTS — für die App transparent) |

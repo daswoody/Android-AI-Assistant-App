@@ -51,10 +51,10 @@ import de.heimai.app.ui.components.ToolConfirmationDialog
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(conversationId: Long, onBack: () -> Unit) {
+fun ChatScreen(conversationId: String?, onBack: () -> Unit) {
     val context = LocalContext.current
     val viewModel: ChatViewModel = viewModel(
-        key = "chat-$conversationId",
+        key = "chat-${conversationId ?: "new"}",
         factory = ChatViewModel.factory(conversationId, mode = "chat"),
     )
     val container = HeimAiApp.from(context.applicationContext as Application).container

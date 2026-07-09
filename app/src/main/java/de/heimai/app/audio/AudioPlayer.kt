@@ -14,6 +14,8 @@ class AudioPlayer {
     private var track: AudioTrack? = null
     private var currentSampleRate = 0
     private var builtCommunication = false
+    /** Geschriebene PCM16-Frames seit Track-Aufbau (für isDraining) */
+    private var framesWritten = 0L
 
     /**
      * true = Wiedergabe über den Voice-Call-Pfad (USAGE_VOICE_COMMUNICATION). Nötig,
@@ -57,6 +59,7 @@ class AudioPlayer {
                 ).also { it.play() }
             }
             track?.write(pcm, 0, pcm.size)
+            framesWritten += pcm.size / 2
         }.onFailure {
             // Audio-HAL-Fehler dürfen die App nicht abstürzen lassen — Track verwerfen,
             // beim nächsten Chunk wird neu aufgebaut.
@@ -65,22 +68,35 @@ class AudioPlayer {
         }
     }
 
+    /**
+     * true, solange der Track noch gepufferte Samples abspielt. Wichtig für den
+     * Echo-Schutz: Das `audio_end` des Servers kommt oft ~0,5–1 s bevor der
+     * lokale Puffer wirklich leer ist — genau in diesem Fenster hört das Mikro
+     * sonst den Ausklang der eigenen Antwort.
+     */
+    @Synchronized
+    fun isDraining(): Boolean {
+        val t = track ?: return false
+        val head = t.playbackHeadPosition.toLong() and 0xFFFFFFFFL
+        return framesWritten > head
+    }
+
+    /** Barge-in: sofort verstummen. Track verwerfen (Neuaufbau beim nächsten Chunk) —
+     *  das setzt auch die Drain-Zähler eindeutig zurück. */
     @Synchronized
     fun stop() {
-        runCatching {
-            track?.pause()
-            track?.flush()
-            track?.play()
-        }
+        release()
     }
 
     @Synchronized
     fun release() {
         runCatching {
-            track?.stop()
+            track?.pause()
+            track?.flush()
             track?.release()
         }
         track = null
         currentSampleRate = 0
+        framesWritten = 0L
     }
 }

@@ -85,18 +85,22 @@ private fun AppNavHost(startDestination: String, settings: AppSettings) {
         }
         composable("home") {
             HomeScreen(
-                onNewChat = { navController.navigate("chat/0") },
-                onOpenChat = { id -> navController.navigate("chat/$id") },
+                onNewChat = { navController.navigate("chat") },
+                onOpenChat = { id -> navController.navigate("chat?id=$id") },
                 onTalk = { navController.navigate("talk") },
                 onSettings = { navController.navigate("settings") },
             )
         }
         composable(
-            "chat/{id}",
-            arguments = listOf(navArgument("id") { type = NavType.LongType }),
+            "chat?id={id}",
+            arguments = listOf(navArgument("id") {
+                type = NavType.StringType
+                nullable = true
+                defaultValue = null
+            }),
         ) { entry ->
             ChatScreen(
-                conversationId = entry.arguments?.getLong("id") ?: 0L,
+                conversationId = entry.arguments?.getString("id"),
                 onBack = { navController.popBackStack() },
             )
         }

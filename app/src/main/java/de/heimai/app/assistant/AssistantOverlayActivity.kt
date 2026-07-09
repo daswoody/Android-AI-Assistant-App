@@ -49,7 +49,6 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import de.heimai.app.HeimAiApp
 import de.heimai.app.MainActivity
-import de.heimai.app.core.db.ConversationRecorder
 import de.heimai.app.core.network.AssistantSession
 import de.heimai.app.core.network.ConnectionState
 import de.heimai.app.ui.components.MessageItem
@@ -77,7 +76,8 @@ class AssistantOverlayActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val container = HeimAiApp.from(application).container
-        val recorder = ConversationRecorder(container.database, lifecycleScope, container.json, source = "assistant")
+        // Historie ist zentral: Der Orchestrator persistiert jeden Turn selbst,
+        // die Assist-Session braucht keinen lokalen Recorder mehr.
         session = AssistantSession(
             scope = lifecycleScope,
             client = container.okHttp,
@@ -87,7 +87,6 @@ class AssistantOverlayActivity : ComponentActivity() {
             tts = container.tts,
             audioSession = container.audioSession,
             mode = "assist",
-            listener = recorder,
         )
         session.connect()
 

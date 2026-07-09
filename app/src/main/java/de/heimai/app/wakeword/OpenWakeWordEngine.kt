@@ -131,15 +131,34 @@ class OpenWakeWordEngine(
         val framesPerChunk = melOutShape[melOutShape.size - 2]
         val melOutFloats = melOutShape.fold(1) { a, b -> a * b }
         val embOutFloats = embModel!!.getOutputTensor(0).shape().fold(1) { a, b -> a * b } // ~96
+        Log.i(
+            TAG,
+            "Modelle geladen: mel=${melOutShape.joinToString("x")} " +
+                "emb=$embOutFloats gate=$energyGate gateRms=$gateRms threshold=$threshold"
+        )
 
         val melFrames = ArrayDeque<FloatArray>()  // je melBins Werte
         val embeddings = ArrayDeque<FloatArray>() // je embOutFloats Werte
         var newMelFrames = 0
         var cooldownUntil = 0L
 
+        // Puffer mit Nullen vorbefüllen (Referenzverhalten von openWakeWord):
+        // Ohne Priming braucht die Pipeline erst 76 Mel-Frames + 16 Embeddings
+        // (~3 s Dauer-Audio), bevor ÜBERHAUPT klassifiziert wird — nach jedem
+        // Gate-Reset wäre das Wake Word damit faktisch taub. Mit Priming läuft
+        // die erste Klassifikation schon nach dem ersten frischen Embedding.
+        fun primeBuffers() {
+            melFrames.clear(); embeddings.clear(); newMelFrames = 0
+            repeat(EMB_WINDOW) { melFrames.addLast(FloatArray(melBins)) }
+            repeat(WW_WINDOW - 1) { embeddings.addLast(FloatArray(embOutFloats)) }
+        }
+        primeBuffers()
+
         val preRoll = ArrayDeque<ShortArray>()    // Roh-Audio-Vorlauf für den Wortanfang
         var lastVoiceMs = 0L
         var wasActive = false
+        var maxScore = 0f
+        var lastScoreLogMs = 0L
 
         val audio = ShortArray(CHUNK)
         try {
@@ -156,23 +175,33 @@ class OpenWakeWordEngine(
                 val now = System.currentTimeMillis()
                 val rms = rmsOf(audio, read)
 
+                // Debug-Hilfe (adb logcat -s OpenWakeWord): alle ~3 s höchster Score
+                // seit dem letzten Log + aktueller Pegel + Gate-Zustand. maxScore=0.00
+                // bei Sprache heißt: Klassifikator lief nicht (Gate öffnet nicht? rms
+                // mit gateRms vergleichen) oder Modell erkennt nichts.
+                if (now - lastScoreLogMs > 3_000) {
+                    Log.d(TAG, "maxScore=%.2f rms=%.0f gateAktiv=%b".format(maxScore, rms, wasActive))
+                    maxScore = 0f
+                    lastScoreLogMs = now
+                }
+
                 // --- Energie-Gate ---
                 if (energyGate) {
                     if (rms > gateRms) lastVoiceMs = now
                     val active = (now - lastVoiceMs) < GATE_HANGOVER_MS
                     if (!active) {
-                        // ML schläft. Nur Pre-Roll pflegen, Zustände zurücksetzen.
+                        // ML schläft. Nur Pre-Roll pflegen.
                         preRoll.addLast(audio.copyOf(read))
                         while (preRoll.size > PREROLL_CHUNKS) preRoll.removeFirst()
-                        if (wasActive) {
-                            melFrames.clear(); embeddings.clear(); newMelFrames = 0
-                            wasActive = false
-                        }
+                        wasActive = false
                         continue
                     }
                     if (!wasActive) {
-                        // Übergang Stille → aktiv: erst den Vorlauf durch die Melspec schieben
+                        // Übergang Stille → aktiv: Puffer frisch primen (Nullen),
+                        // dann den Audio-Vorlauf durch die Melspec schieben — so ist
+                        // der leise Wortanfang enthalten UND sofort klassifizierbar.
                         wasActive = true
+                        primeBuffers()
                         for (chunk in preRoll) {
                             newMelFrames += pushMel(chunk, chunk.size, melModel!!, melOutFloats, framesPerChunk, melBins, melFrames)
                         }
@@ -193,9 +222,11 @@ class OpenWakeWordEngine(
                 // --- Wake-Word-Klassifikator ---
                 if (embeddings.size >= WW_WINDOW && now >= cooldownUntil) {
                     val prob = runWakeWord(embeddings, embOutFloats, wwModel!!)
+                    if (prob > maxScore) maxScore = prob
                     if (prob >= threshold) {
+                        Log.i(TAG, "Wake Word erkannt (score=%.2f)".format(prob))
                         cooldownUntil = now + COOLDOWN_MS
-                        melFrames.clear(); embeddings.clear(); newMelFrames = 0
+                        primeBuffers()
                         runCatching { onDetected() }
                     }
                 }

@@ -1,5 +1,6 @@
 package de.heimai.app.core.network
 
+import de.heimai.app.core.model.CardEnvelope
 import de.heimai.app.core.model.LayoutTemplate
 import de.heimai.app.core.settings.SettingsRepository
 import kotlinx.coroutines.Dispatchers
@@ -34,6 +35,46 @@ data class Voice(val id: String, val name: String)
 @Serializable
 data class VoicesResponse(val voices: List<Voice>)
 
+/**
+ * Zentrale Chat-Historie: Der Server besitzt die Gespräche, die App ist nur
+ * eine Ansicht (dieselbe Historie in Browser, Windows und Android).
+ */
+@Serializable
+data class RemoteConversation(
+    val id: String,
+    val title: String = "",
+    val device_name: String = "",
+    val message_count: Int = 0,
+    val created_at: String = "",
+    val updated_at: String = "",
+)
+
+@Serializable
+data class ConversationsResponse(val conversations: List<RemoteConversation> = emptyList())
+
+@Serializable
+data class RemoteMessage(
+    val id: Long = 0,
+    val role: String,
+    val content: String = "",
+    val cards: List<CardEnvelope> = emptyList(),
+    val has_image: Boolean = false,
+    val created_at: String = "",
+)
+
+@Serializable
+data class ConversationDetail(
+    val id: String,
+    val title: String = "",
+    val device_name: String = "",
+    val created_at: String = "",
+    val updated_at: String = "",
+    val messages: List<RemoteMessage> = emptyList(),
+)
+
+@Serializable
+data class OkResponse(val ok: Boolean = true)
+
 class ApiException(message: String, val code: Int = 0) : IOException(message)
 
 /**
@@ -65,6 +106,23 @@ class ApiClient(
     suspend fun voices(): VoicesResponse {
         val base = settings.current().serverUrl
         return get("$base/v1/voices")
+    }
+
+    // ---- Zentrale Chat-Historie (Server ist Source of Truth) ----
+
+    suspend fun conversations(): ConversationsResponse {
+        val base = settings.current().serverUrl
+        return get("$base/v1/conversations")
+    }
+
+    suspend fun conversation(id: String): ConversationDetail {
+        val base = settings.current().serverUrl
+        return get("$base/v1/conversations/$id")
+    }
+
+    suspend fun deleteConversation(id: String): OkResponse {
+        val base = settings.current().serverUrl
+        return execute(Request.Builder().url("$base/v1/conversations/$id").delete(), auth = true)
     }
 
     private suspend inline fun <reified T> get(url: String, auth: Boolean = true): T =
