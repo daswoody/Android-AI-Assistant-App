@@ -21,12 +21,21 @@ data class CardEnvelope(
  * Server-definiertes Karten-Layout (zentral für Android UND Windows).
  * Wird vom Card-Layout-Server (GET /v1/cards/layouts) aktualisiert und
  * lokal gecacht; Fallback sind die mitgelieferten Templates in assets/cards.
+ *
+ * ADDITIV (v1.12): `format` = "json" (Default, Compose-Baum in `root`) oder
+ * "html" (`html`-Fragment wird gerendert, `root` bleibt als Fallback-Baum).
+ * Alte Cache-Einträge ohne die Felder gelten als "json".
  */
 @Serializable
 data class LayoutTemplate(
     @SerialName("card_type") val cardType: String,
     @SerialName("layout_version") val layoutVersion: Int = 1,
-    val root: LayoutNode,
+    /** "json" (Default) | "html" */
+    val format: String = "json",
+    /** HTML-Fragment für format=="html"; {{data.*}}/{{title}}-Bindings werden clientseitig aufgelöst */
+    val html: String? = null,
+    /** Compose-Layout-Baum (format=="json") bzw. Fallback bei "html" */
+    val root: LayoutNode? = null,
 )
 
 /**

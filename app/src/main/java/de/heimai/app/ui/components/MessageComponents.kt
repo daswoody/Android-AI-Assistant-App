@@ -2,7 +2,15 @@ package de.heimai.app.ui.components
 
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
@@ -18,26 +26,78 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import de.heimai.app.cards.HeimCard
 import de.heimai.app.core.AppContainer
 import de.heimai.app.core.model.CardAction
 import de.heimai.app.core.model.CardEnvelope
+import de.heimai.app.core.network.ToolActivity
 import de.heimai.app.core.network.UiMessage
 import de.heimai.app.tools.ConfirmationBroker
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
 
-/** Eine Chat-Nachricht: Sprechblase (user/assistant) oder gerenderte Karte. */
+/** Eine Chat-Nachricht: Sprechblase (user/assistant), Karte oder Tool-Aktivität. */
 @Composable
 fun MessageItem(message: UiMessage, container: AppContainer) {
     when {
+        message.role == "tool_activity" -> ToolActivityRow(message.activities)
         message.card != null -> Box(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
             CardItem(message.card, container)
         }
         message.role == "user" -> Bubble(message.text, fromUser = true)
         else -> Bubble(message.text, fromUser = false)
+    }
+}
+
+/**
+ * Kleine Chip-Zeile über der Antwort: 🔧 + Toolname (bzw. 🤖 „Agent: <name>" bei
+ * Präfix „agent-"). running pulsiert, done ✓, error ⚠.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ToolActivityRow(activities: List<ToolActivity>) {
+    if (activities.isEmpty()) return
+    FlowRow(
+        Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        activities.forEach { a ->
+            val isAgent = a.tool.startsWith("agent-")
+            val name = if (isAgent) "Agent: ${a.tool.removePrefix("agent-")}" else a.tool
+            val emoji = if (isAgent) "🤖" else "🔧"
+            val suffix = when (a.status) {
+                "done" -> " ✓"
+                "error" -> " ⚠"
+                else -> ""
+            }
+            val pulse = if (a.status == "running") {
+                val t = rememberInfiniteTransition(label = "pulse")
+                t.animateFloat(
+                    initialValue = 0.45f, targetValue = 1f,
+                    animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse),
+                    label = "alpha",
+                ).value
+            } else 1f
+            val color = when (a.status) {
+                "error" -> MaterialTheme.colorScheme.error
+                else -> MaterialTheme.colorScheme.primary
+            }
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                shape = MaterialTheme.shapes.small,
+                modifier = Modifier.alpha(pulse),
+            ) {
+                Text(
+                    "$emoji $name$suffix",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = color,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                )
+            }
+        }
     }
 }
 

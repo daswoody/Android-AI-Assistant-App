@@ -73,10 +73,20 @@ fun HeimCard(
                 Spacer(Modifier.height(8.dp))
             }
             val root = template?.root
-            if (root == null) {
-                Text(card.data.toString(), style = MaterialTheme.typography.bodySmall)
-            } else {
-                RenderNode(root, cardContext(card), onAction)
+            when {
+                // 1a) Ad-hoc-HTML-Karte: fertiges Fragment in data.html
+                card.type == "html" -> {
+                    val html = (card.data["html"] as? JsonPrimitive)?.content.orEmpty()
+                    val height = (card.data["height"] as? JsonPrimitive)?.content?.toFloatOrNull()?.toInt()
+                    HtmlCardBody(html, height)
+                }
+                // 1b) Gespeichertes HTML-Layout: Fragment mit aufgelösten Bindings
+                template != null && template.format == "html" && template.html != null -> {
+                    HtmlCardBody(resolveHtmlBindings(template.html, card), null)
+                }
+                // JSON-Layout (bisheriger Compose-Pfad)
+                root != null -> RenderNode(root, cardContext(card), onAction)
+                else -> Text(card.data.toString(), style = MaterialTheme.typography.bodySmall)
             }
         }
     }
@@ -175,6 +185,26 @@ private fun nodeColor(name: String?): Color = when {
 }
 
 private val BINDING = Regex("\\{\\{([^}]+)}}")
+
+/**
+ * Löst {{data.*}}/{{title}}-Bindings in einem HTML-Fragment auf (gespeicherte
+ * HTML-Layouts, v1.12). Gleiche Binding-Syntax wie die JSON-Layouts, aber die
+ * eingesetzten Werte werden HTML-escaped (& < > "), damit Daten kein Markup
+ * einschleusen können.
+ */
+fun resolveHtmlBindings(raw: String, card: CardEnvelope): String {
+    val context = cardContext(card)
+    return BINDING.replace(raw) { match ->
+        val value = lookup(context, match.groupValues[1].trim())
+        htmlEscape((value as? JsonPrimitive)?.content ?: value?.toString() ?: "")
+    }
+}
+
+private fun htmlEscape(s: String): String = s
+    .replace("&", "&amp;")
+    .replace("<", "&lt;")
+    .replace(">", "&gt;")
+    .replace("\"", "&quot;")
 
 private fun bind(raw: String?, context: JsonElement): String {
     if (raw == null) return ""

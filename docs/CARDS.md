@@ -18,6 +18,24 @@ Template entscheidet, was gerendert wird. Unbekannte Typen fallen auf das
 `generic`-Template zurück (erwartet `data.headline` + `data.body`), d. h.
 der Server kann neue Kartentypen einführen, bevor das Layout verteilt ist.
 
+### Ad-hoc-HTML-Karten (ADDITIV, v1.12)
+
+`type: "html"` liefert ein fertiges, self-contained HTML-Fragment direkt in `data.html`
+(KI-generiert zur Laufzeit, kein gespeichertes Layout nötig):
+
+```json
+{ "type": "html", "version": 1, "title": "Flugsuche Schweden",
+  "data": { "html": "<div style=…>…</div>", "height": 320, "ziel": "Stockholm" } }
+```
+
+- `data.html` wird in einer **isolierten WebView** gerendert (JS an, aber ohne Zugriff auf
+  Token/Storage/Dateien; Links/`window.open`/`target=_blank` öffnen den System-Browser).
+- Optional `data.height` (px) als Wunschhöhe — auf **max. 800 px** gekappt; sonst folgt die
+  Höhe dem Inhalt (24–800 dp).
+- Übrige `data`-Keys sind Rohdaten und werden nicht angezeigt.
+- Fragment muss self-contained sein (Inline-CSS/JS, keine CDNs) — Netz-Requests der Karte
+  funktionieren nicht.
+
 ## LayoutTemplate
 
 ```json
@@ -32,6 +50,25 @@ der Server kann neue Kartentypen einführen, bevor das Layout verteilt ist.
   }
 }
 ```
+
+**ADDITIV (v1.12): gespeicherte HTML-Layouts.** Ein Template kann statt (bzw. neben) `root`
+ein HTML-Fragment tragen:
+
+```json
+{
+  "card_type": "fancy",
+  "layout_version": 7,
+  "format": "html",
+  "html": "<div><h3>{{data.headline}}</h3><p>{{data.body}}</p></div>",
+  "root": { "component": "column", "children": [ … ] }
+}
+```
+
+- `format`: `"json"` (Default/fehlt → `root` mit Compose rendern, wie bisher) oder `"html"`.
+- Bei `format:"html"` löst die App `{{data.*}}`/`{{title}}`-Bindings clientseitig auf
+  (gleiche Syntax wie JSON-Layouts, Werte HTML-escaped: `& < > "`) und rendert das Fragment
+  in derselben isolierten WebView wie Ad-hoc-HTML-Karten. `root` bleibt als Fallback.
+- Der Room-Cache persistiert `format`/`html` mit; Alt-Einträge ohne die Felder gelten als `"json"`.
 
 ### Komponenten
 

@@ -74,13 +74,28 @@ sonst `{ "version": N, "layouts": [] }`.
     {
       "card_type": "weather",
       "layout_version": 3,
+      "format": "json",
+      "root": { "component": "column", "children": [ ... ] }
+    },
+    {
+      "card_type": "fancy",
+      "layout_version": 7,
+      "format": "html",
+      "html": "<div><h3>{{data.headline}}</h3>...</div>",
       "root": { "component": "column", "children": [ ... ] }
     }
   ]
 }
 ```
+**ADDITIV (v1.12):** pro Template zwei optionale Felder:
+- `format`: `"json"` (Default, wie bisher → `root` mit Compose rendern) oder `"html"`.
+- `html`: HTML-Fragment für `format=="html"`; die App löst `{{data.*}}`/`{{title}}`-Bindings
+  clientseitig auf (identische Syntax wie JSON-Layouts, Werte werden HTML-escaped) und rendert
+  es in einer isolierten WebView. `root` bleibt als Fallback-Baum enthalten.
+- Felder fehlen / Cache-Einträge ohne sie → gelten als `"json"`.
+
 Das Template-Format ist in `docs/CARDS.md` definiert. Die App cacht
-Layouts lokal (Room) und fällt offline auf mitgelieferte Assets zurück.
+Layouts lokal (Room, inkl. `format`/`html`) und fällt offline auf mitgelieferte Assets zurück.
 
 ---
 
@@ -112,7 +127,8 @@ typisch 24000 bei XTTS-v2).
 | `assistant_text` | `text`, `final` (bool) | Antwort-Text; Deltas mit `final:false`, Abschluss `final:true` (bei `final:true` darf `text` der Volltext sein, sonst leer) |
 | `audio_chunk` | `data` (b64 PCM16), `sample_rate` | TTS-Audio-Stream (Filler über Piper zuerst, dann XTTS — für die App transparent) |
 | `audio_end` | – | TTS-Stream zu Ende |
-| `card` | `card{type,version,title?,data}` | Karten-Push parallel zur Sprachantwort |
+| `card` | `card{type,version,title?,data}` | Karten-Push parallel zur Sprachantwort. **ADDITIV (v1.12):** `type:"html"` → `data.html` ist ein fertiges HTML-Fragment (in isolierter WebView gerendert), optional `data.height` (px, auf 800 gekappt); übrige `data`-Keys sind Rohdaten. Unbekannte Typen → weiterhin `generic`-Fallback |
+| `tool_activity` | `tool`, `status` (running\|done\|error) | **ADDITIV (v1.12), rein informativ:** Tool-/Agent-Aktivität als Chip-Zeile über der Antwort (running legt Chip an, done/error stempelt ihn; mehrere Frames eines Turns in EINER Zeile). Präfix `agent-` → 🤖 „Agent: …". Kein Effekt auf den Turn-Ablauf |
 | `tool_call` | `call_id`, `name`, `arguments` (JSON) | LLM will ein Geräte-Tool ausführen |
 | `done` | – | Turn abgeschlossen. **TTS-Fallback-Regel:** Die App liest den Antworttext nur dann per On-Device-TTS vor, wenn die Anfrage per **Audio** (Mikrofon) kam UND der Server in diesem Turn **kein** `audio_chunk` geliefert hat. Bei Texteingaben wird nie vorgelesen (der Server antwortet dort bewusst ohne Audio) |
 | `error` | `message` | Fehler |

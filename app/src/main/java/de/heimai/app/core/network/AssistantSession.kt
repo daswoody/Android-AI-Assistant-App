@@ -35,12 +35,16 @@ import kotlin.math.sqrt
 
 enum class ConnectionState { DISCONNECTED, CONNECTING, CONNECTED, ERROR }
 
+/** Tool-/Agent-Aktivität eines Turns (informativ, v1.12). status: running | done | error */
+data class ToolActivity(val tool: String, val status: String)
+
 data class UiMessage(
     val id: Long,
-    /** user | assistant | card | info */
+    /** user | assistant | card | info | tool_activity */
     val role: String,
     val text: String = "",
     val card: CardEnvelope? = null,
+    val activities: List<ToolActivity> = emptyList(),
     val final: Boolean = true,
 )
 
@@ -117,6 +121,8 @@ class AssistantSession(
     private var commActive = false
     private var currentAssistantText = StringBuilder()
     private var currentAssistantMsgId: Long? = null
+    /** Chip-Zeile der Tool-/Agent-Aktivität DIESES Turns (null = noch keine im Turn). */
+    private var currentToolActivityMsgId: Long? = null
 
     fun connect() {
         if (webSocket != null) return
@@ -150,6 +156,7 @@ class AssistantSession(
         if (text.isBlank()) return
         addMessage(UiMessage(nextId.getAndIncrement(), "user", text))
         listener?.onUserText(text)
+        currentToolActivityMsgId = null // neuer Turn → neue Chip-Zeile
         // Texteingabe: KEIN TTS-Fallback (Server antwortet hier bewusst ohne Audio)
         userAudioThisTurn = false
         serverAudioThisTurn = false
@@ -350,6 +357,7 @@ class AssistantSession(
                     if (t.isNotBlank()) {
                         addMessage(UiMessage(nextId.getAndIncrement(), "user", t))
                         listener?.onUserText(t)
+                        currentToolActivityMsgId = null // neuer Turn → neue Chip-Zeile
                     }
                 } else {
                     _state.value = _state.value.copy(partialTranscript = t)
@@ -378,6 +386,11 @@ class AssistantSession(
                 player.play(Base64.decode(data, Base64.NO_WRAP), rate)
             }
             "audio_end" -> _state.value = _state.value.copy(speaking = false)
+            "tool_activity" -> {
+                val tool = obj["tool"]?.jsonPrimitive?.content ?: return
+                val status = obj["status"]?.jsonPrimitive?.content ?: "running"
+                upsertToolActivity(tool, status)
+            }
             "conversation" -> {
                 val id = obj["conversation_id"]?.jsonPrimitive?.content ?: return
                 conversationId = id
@@ -475,6 +488,32 @@ class AssistantSession(
             _state.value = _state.value.copy(
                 messages = _state.value.messages.map {
                     if (it.id == id) it.copy(text = text, final = final) else it
+                }
+            )
+        }
+    }
+
+    /**
+     * Tool-Aktivität als Chip-Zeile des aktuellen Turns: `running` legt einen Chip
+     * an bzw. eröffnet die Zeile, `done`/`error` stempelt den vorhandenen Chip.
+     * Mehrere Tools eines Turns landen in EINER Zeile (eine tool_activity-UiMessage).
+     */
+    private fun upsertToolActivity(tool: String, status: String) {
+        val id = currentToolActivityMsgId
+        if (id == null) {
+            val newId = nextId.getAndIncrement()
+            currentToolActivityMsgId = newId
+            addMessage(UiMessage(newId, "tool_activity", activities = listOf(ToolActivity(tool, status))))
+        } else {
+            _state.value = _state.value.copy(
+                messages = _state.value.messages.map { msg ->
+                    if (msg.id != id) return@map msg
+                    val updated = if (msg.activities.any { it.tool == tool }) {
+                        msg.activities.map { if (it.tool == tool) ToolActivity(tool, status) else it }
+                    } else {
+                        msg.activities + ToolActivity(tool, status)
+                    }
+                    msg.copy(activities = updated)
                 }
             )
         }
