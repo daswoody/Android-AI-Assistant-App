@@ -100,7 +100,12 @@ class SettingsRepository(private val context: Context) {
             darkMode = p[Keys.DARK_MODE] ?: "system",
             voiceId = p[Keys.VOICE_ID] ?: "",
             wakeWordEnabled = p[Keys.WAKE_WORD_ENABLED] ?: false,
-            wakeWordKeyword = p[Keys.WAKE_WORD_KEYWORD] ?: "hey_jarvis_v0.1.tflite",
+            // Migration Porcupine -> openWakeWord: Altbestände wie "COMPUTER"/"JARVIS"
+            // sind keine .tflite-Modelle mehr — sonst stirbt die Engine beim Laden
+            // von assets/openwakeword/COMPUTER stumm. Auf das Default-Modell mappen.
+            wakeWordKeyword = (p[Keys.WAKE_WORD_KEYWORD] ?: "hey_jarvis_v0.1.tflite").let {
+                if (it == "CUSTOM" || it.endsWith(".tflite")) it else "hey_jarvis_v0.1.tflite"
+            },
             customWakeWordPath = p[Keys.CUSTOM_PPN_PATH] ?: "",
             wakeWordThreshold = p[Keys.WAKE_WORD_THRESHOLD] ?: 50,
             wakeWordEnergyGate = p[Keys.WAKE_WORD_ENERGY_GATE] ?: true,

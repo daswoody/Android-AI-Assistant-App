@@ -43,6 +43,13 @@ class OpenWakeWordEngine(
     /** RMS-Schwelle des Energie-Gates. */
     private val gateRms: Double,
     private val onDetected: () -> Unit,
+    /**
+     * Engine ist endgültig gestorben (Modell fehlt, Mikrofon belegt, Loop-Absturz).
+     * WICHTIG für die Diagnose: Ohne diesen Kanal bleibt die Foreground-Notification
+     * stehen, obwohl nichts mehr lauscht — genau das Symptom "läuft angeblich,
+     * aber keine Logs".
+     */
+    private val onFatal: (String) -> Unit = {},
 ) : WakeWordEngine {
 
     private var thread: Thread? = null
@@ -105,11 +112,13 @@ class OpenWakeWordEngine(
 
     @SuppressLint("MissingPermission")
     private fun loop() {
+        Log.i(TAG, "Engine-Thread gestartet (Modell=$wakeWordModel, custom=${customModelPath.isNotBlank()})")
         try {
             setup()
         } catch (e: Exception) {
             Log.e(TAG, "openWakeWord-Modelle konnten nicht geladen werden", e)
             running = false
+            onFatal("Wake-Word-Modell '$wakeWordModel' konnte nicht geladen werden: ${e.message}")
             return
         }
 
@@ -122,7 +131,11 @@ class OpenWakeWordEngine(
             maxOf(minBuf, CHUNK * 4),
         )
         if (record.state != AudioRecord.STATE_INITIALIZED) {
-            record.release(); running = false; return
+            Log.e(TAG, "AudioRecord nicht initialisierbar (Mikrofon belegt?)")
+            record.release()
+            running = false
+            onFatal("Mikrofon nicht verfügbar (von anderer App/Session belegt?)")
+            return
         }
 
         // Ausgabe-Formen der Modelle zur Laufzeit
@@ -233,6 +246,7 @@ class OpenWakeWordEngine(
             }
         } catch (e: Exception) {
             Log.e(TAG, "Wake-Word-Schleife abgebrochen", e)
+            onFatal("Wake-Word-Erkennung abgestürzt: ${e.message}")
         } finally {
             runCatching { record.stop() }
             record.release()

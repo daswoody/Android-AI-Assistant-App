@@ -57,6 +57,11 @@ class WakeWordService : Service() {
         // openWakeWord braucht KEINEN Lizenz-Key. Bereit, sobald ein Modell gewählt ist.
         val configReady = if (settings.wakeWordKeyword == OpenWakeWordEngine.CUSTOM) useCustom else true
         if (!settings.wakeWordEnabled || !configReady || !hasMicPermission()) {
+            Log.w(
+                TAG,
+                "Start abgelehnt: enabled=${settings.wakeWordEnabled} " +
+                    "configReady=$configReady mic=${hasMicPermission()} modell=${settings.wakeWordKeyword}"
+            )
             stopSelf()
             return START_NOT_STICKY
         }
@@ -87,10 +92,12 @@ class WakeWordService : Service() {
                 energyGate = settings.wakeWordEnergyGate,
                 gateRms = settings.wakeWordGateRms.toDouble(),
                 onDetected = ::onWakeWord,
+                onFatal = ::onEngineFatal,
             )
             builtSignature = signature
             // Nur starten, wenn nicht gerade vom Overlay pausiert (Mikrofon frei halten).
             if (!paused) engine?.start()
+            Log.i(TAG, "Engine gestartet (modell=${settings.wakeWordKeyword}, paused=$paused)")
         } catch (e: Exception) {
             builtSignature = null
             Log.e(TAG, "Wake-Word-Engine konnte nicht starten", e)
@@ -105,6 +112,27 @@ class WakeWordService : Service() {
         engine = null
         instance = null
         super.onDestroy()
+    }
+
+    /**
+     * Engine endgültig gestorben (Modell fehlt, Mikrofon belegt, Absturz).
+     * Statt einer weiterlaufenden "alles ok"-Foreground-Notification: sichtbare
+     * Fehler-Notification posten und den Dienst beenden — sonst sieht es so aus,
+     * als liefe das Wake Word, obwohl nichts mehr lauscht.
+     * Läuft auf dem Engine-Thread; notify/stopSelf sind threadsicher.
+     */
+    private fun onEngineFatal(reason: String) {
+        Log.e(TAG, "Engine gestorben: $reason")
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_app)
+            .setContentTitle("Wake Word gestoppt")
+            .setContentText(reason)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(reason))
+            .setAutoCancel(true)
+            .build()
+        manager.notify(3, notification)
+        stopSelf()
     }
 
     /** Erkennung pausieren, solange das Assistant-Popup selbst das Mikrofon braucht. */
