@@ -82,7 +82,18 @@ class OpenWakeWordEngine(
     // ---- Modell-Laden ----
 
     private fun interpreter(buffer: ByteBuffer): Interpreter =
-        Interpreter(buffer, Interpreter.Options().apply { numThreads = 1 })
+        Interpreter(
+            buffer,
+            Interpreter.Options().apply {
+                numThreads = 1
+                // Die openWakeWord-Modelle tragen dynamische Dimensionen (-1, z. B.
+                // Batch beim Embedding-Modell). TFLite wendet XNNPACK schon im
+                // Konstruktor an und rechnet dabei die Puffergrößen mit -1 aus →
+                // "BytesRequired number of elements overflowed" / "CONV_2D failed
+                // to prepare", bevor resizeInput() überhaupt laufen kann.
+                setUseXNNPACK(false)
+            },
+        )
 
     private fun loadAsset(name: String): ByteBuffer {
         context.assets.openFd("openwakeword/$name").use { fd ->
@@ -98,14 +109,44 @@ class OpenWakeWordEngine(
         }
     }
 
+    /**
+     * Alle drei Modelle laden und ihre dynamischen Eingabe-Dimensionen (-1) auf
+     * konkrete Formen resizen, BEVOR allokiert wird (Referenzverhalten von
+     * openWakeWord: resize_tensor_input für Mel- UND Embedding-Modell).
+     * [stage] im Fehlerfall benennt das Modell, das tatsächlich gescheitert ist.
+     */
     private fun setup() {
-        melModel = interpreter(loadAsset("melspectrogram.tflite"))
-        embModel = interpreter(loadAsset("embedding_model.tflite"))
-        wwModel = if (customModelPath.isNotBlank()) interpreter(loadFile(customModelPath))
-        else interpreter(loadAsset(wakeWordModel))
-        // melspectrogram erwartet festes Fenster [1, CHUNK]
-        melModel!!.resizeInput(0, intArrayOf(1, CHUNK))
-        melModel!!.allocateTensors()
+        var stage = "melspectrogram"
+        try {
+            melModel = interpreter(loadAsset("melspectrogram.tflite"))
+            // melspectrogram erwartet festes Fenster [1, CHUNK]
+            melModel!!.resizeInput(0, intArrayOf(1, CHUNK))
+            melModel!!.allocateTensors()
+            val melBins = melModel!!.getOutputTensor(0).shape().last()
+
+            stage = "embedding"
+            embModel = interpreter(loadAsset("embedding_model.tflite"))
+            embModel!!.resizeInput(0, intArrayOf(1, EMB_WINDOW, melBins, 1))
+            embModel!!.allocateTensors()
+            val embOut = embModel!!.getOutputTensor(0).shape().fold(1) { a, b -> a * b }
+
+            stage = if (customModelPath.isNotBlank()) "custom" else wakeWordModel
+            wwModel = if (customModelPath.isNotBlank()) interpreter(loadFile(customModelPath))
+            else interpreter(loadAsset(wakeWordModel))
+            // Deklarierte Form übernehmen, nur nicht-positive (dynamische) Dims festnageln.
+            val declared = wwModel!!.getInputTensor(0).shape()
+            val fixed = IntArray(declared.size) { i ->
+                if (declared[i] > 0) declared[i] else when (i) {
+                    0 -> 1
+                    1 -> WW_WINDOW
+                    else -> embOut
+                }
+            }
+            wwModel!!.resizeInput(0, fixed)
+            wwModel!!.allocateTensors()
+        } catch (e: Exception) {
+            throw RuntimeException("[$stage] ${e.message}", e)
+        }
     }
 
     // ---- Verarbeitungs-Schleife ----
