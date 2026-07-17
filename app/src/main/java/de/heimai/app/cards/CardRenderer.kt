@@ -184,7 +184,10 @@ private fun nodeColor(name: String?): Color = when {
     else -> Color.Unspecified
 }
 
-private val BINDING = Regex("\\{\\{([^}]+)}}")
+// Schließende Klammern MÜSSEN escaped sein: Androids ICU-Regex-Engine wirft
+// bei nacktem "}" eine PatternSyntaxException (JVM-Engine ist da toleranter) —
+// das hat beim ersten Karten-Rendern die ganze App gecrasht.
+private val BINDING = Regex("\\{\\{([^}]+)\\}\\}")
 
 /**
  * Löst {{data.*}}/{{title}}-Bindings in einem HTML-Fragment auf (gespeicherte
