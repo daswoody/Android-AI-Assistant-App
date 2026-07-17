@@ -67,11 +67,32 @@ class AssistantOverlayActivity : ComponentActivity() {
     private lateinit var session: AssistantSession
     private var micGranted = false
 
+    private companion object {
+        /** Inaktivität, nach der sich das Popup selbst schließt (Wake Word übernimmt wieder). */
+        const val IDLE_CLOSE_MS = 8_000L
+    }
+
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             micGranted = granted
-            if (granted) session.startListening()
+            if (granted) startRealtimeTalk()
         }
+
+    /**
+     * Wake-Word-Flow = Realtime Talk: kontinuierlich zuhören, Sprechpausen per
+     * VAD erkennen und automatisch senden (gleiche Einstellungen wie der
+     * Talk-Screen) — kein manuelles Stopp/Start pro Äußerung.
+     */
+    private fun startRealtimeTalk() {
+        val s = HeimAiApp.from(application).container.settings.currentBlocking()
+        session.startListening(
+            continuous = true,
+            silenceMs = s.talkSilenceMs,
+            thresholdRms = s.talkThreshold,
+            halfDuplex = s.talkHalfDuplex,
+            aec = s.talkAec,
+        )
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -126,14 +147,45 @@ class AssistantOverlayActivity : ComponentActivity() {
         var input by remember { mutableStateOf("") }
         val listState = rememberLazyListState()
 
-        // Mikrofon automatisch öffnen, sobald verbunden (Wake-Word-Flow)
+        // Mikrofon automatisch öffnen, sobald verbunden (Wake-Word-Flow):
+        // direkt im Realtime-Talk-Modus (VAD, Auto-Send nach Sprechpause).
         LaunchedEffect(state.connection) {
             if (state.connection == ConnectionState.CONNECTED && micGranted && !state.listening) {
-                session.startListening()
+                startRealtimeTalk()
             }
         }
         LaunchedEffect(state.messages.size) {
             if (state.messages.isNotEmpty()) listState.animateScrollToItem(state.messages.size - 1)
+        }
+
+        // Auto-Standby: Nach [IDLE_CLOSE_MS] ohne Aktivität (keine Sprache, keine
+        // Antwort/Wiedergabe, keine offene Bestätigung, kein Tipp-Entwurf) schließt
+        // sich das Popup selbst — danach übernimmt wieder das Wake Word. Deckt auch
+        // "Aktion fertig ausgeführt" ab: Karte gezeigt + Antwort zu Ende → Timer läuft.
+        val overlaySettings by HeimAiApp.from(application).container.settings.settings.collectAsState(
+            initial = de.heimai.app.core.settings.AppSettings()
+        )
+        LaunchedEffect(overlaySettings.talkThreshold) {
+            var lastActivity = System.currentTimeMillis()
+            var lastMessageCount = session.state.value.messages.size
+            while (true) {
+                kotlinx.coroutines.delay(500)
+                val s = session.state.value
+                val busy = s.speaking ||
+                    s.partialTranscript.isNotBlank() ||
+                    s.connection == ConnectionState.CONNECTING ||
+                    session.micLevel.value > overlaySettings.talkThreshold ||
+                    de.heimai.app.tools.ConfirmationBroker.pending.value != null ||
+                    input.isNotBlank()
+                if (busy || s.messages.size != lastMessageCount) {
+                    lastMessageCount = s.messages.size
+                    lastActivity = System.currentTimeMillis()
+                }
+                if (System.currentTimeMillis() - lastActivity > IDLE_CLOSE_MS) {
+                    finish()
+                    break
+                }
+            }
         }
 
         ToolConfirmationDialog()
@@ -225,7 +277,7 @@ class AssistantOverlayActivity : ComponentActivity() {
                             }
                             FilledIconButton(onClick = {
                                 if (state.listening) session.stopListening()
-                                else if (micGranted) session.startListening()
+                                else if (micGranted) startRealtimeTalk()
                                 else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                             }) {
                                 Icon(

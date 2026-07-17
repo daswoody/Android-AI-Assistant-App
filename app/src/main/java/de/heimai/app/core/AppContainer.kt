@@ -23,6 +23,10 @@ class AppContainer(private val context: Context) {
         ignoreUnknownKeys = true
         encodeDefaults = true
         explicitNulls = false
+        // Server darf für optionale Felder explizit null schicken (z. B.
+        // "title": null bei Gesprächen ohne Titel) — auf den Default coercen
+        // statt die ganze Antwort mit einer Exception zu verwerfen.
+        coerceInputValues = true
     }
 
     val okHttp: OkHttpClient = OkHttpClient.Builder()

@@ -132,16 +132,21 @@ class OpenWakeWordEngine(
             return
         }
 
-        // Ausgabe-Formen per Probelauf mit Stille ermitteln (Modelle sind dynamisch)
+        // Probelauf mit Null-Audio: liefert die Ausgabe-Formen (Modelle sind
+        // dynamisch) UND die Stille-Referenzwerte fürs Puffer-Priming.
         val melBins: Int
         val framesPerChunk: Int
         val embOutFloats: Int
+        val silenceMel: FloatArray
+        val silenceEmb: FloatArray
         try {
             val probe = runMel(ShortArray(CHUNK), CHUNK)
             melBins = probe.first().size
             framesPerChunk = probe.size
-            val zeroMels = ArrayDeque<FloatArray>().apply { repeat(EMB_WINDOW) { addLast(FloatArray(melBins)) } }
-            embOutFloats = runEmbedding(zeroMels, melBins).size
+            silenceMel = probe.last()
+            val silenceMels = ArrayDeque<FloatArray>().apply { repeat(EMB_WINDOW) { addLast(silenceMel.copyOf()) } }
+            silenceEmb = runEmbedding(silenceMels, melBins)
+            embOutFloats = silenceEmb.size
         } catch (e: Exception) {
             Log.e(TAG, "Modell-Probelauf fehlgeschlagen", e)
             running = false
@@ -181,15 +186,19 @@ class OpenWakeWordEngine(
         var newMelFrames = 0
         var cooldownUntil = 0L
 
-        // Puffer mit Nullen vorbefüllen (Referenzverhalten von openWakeWord):
+        // Puffer mit STILLE vorbefüllen (Referenzverhalten von openWakeWord:
+        // dort wird der Feature-Puffer mit Embeddings von Null-AUDIO initialisiert).
         // Ohne Priming braucht die Pipeline erst 76 Mel-Frames + 16 Embeddings
         // (~3 s Dauer-Audio), bevor ÜBERHAUPT klassifiziert wird — nach jedem
-        // Gate-Reset wäre das Wake Word damit faktisch taub. Mit Priming läuft
-        // die erste Klassifikation schon nach dem ersten frischen Embedding.
+        // Gate-Reset wäre das Wake Word damit faktisch taub.
+        // WICHTIG: mit den Stille-Werten aus dem Probelauf primen, NICHT mit
+        // Null-Werten — Null-Embeddings sind Out-of-Distribution-Eingaben, auf
+        // die manche Klassifikatoren (Alexa, Hey Mycroft) mit hohen Scores
+        // reagieren → Dauer-Fehlauslöser direkt nach jedem Gate-Öffnen.
         fun primeBuffers() {
             melFrames.clear(); embeddings.clear(); newMelFrames = 0
-            repeat(EMB_WINDOW) { melFrames.addLast(FloatArray(melBins)) }
-            repeat(WW_WINDOW - 1) { embeddings.addLast(FloatArray(embOutFloats)) }
+            repeat(EMB_WINDOW) { melFrames.addLast(silenceMel.copyOf()) }
+            repeat(WW_WINDOW - 1) { embeddings.addLast(silenceEmb.copyOf()) }
         }
         primeBuffers()
 

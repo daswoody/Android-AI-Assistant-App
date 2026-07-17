@@ -60,6 +60,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import de.heimai.app.HeimAiApp
 import de.heimai.app.core.AppContainer
+import de.heimai.app.core.CrashLog
 import de.heimai.app.core.network.Voice
 import de.heimai.app.core.settings.AppSettings
 import de.heimai.app.ui.theme.THEMES
@@ -602,6 +603,47 @@ fun AiSettingsScreen(onBack: () -> Unit) {
         )
         OutlinedButton(onClick = {}, enabled = false, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
             Text("Stimmprofil trainieren (bald verfügbar)")
+        }
+
+        // --- Diagnose: letzter Absturz (ohne adb abrufbar) ---
+        var crashText by remember { mutableStateOf(CrashLog.read(context)) }
+        if (crashText != null) {
+            HorizontalDivider(Modifier.padding(vertical = 12.dp))
+            Text("Diagnose", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "Die App ist zuletzt abgestürzt. Stacktrace kopieren und im Projekt melden:",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+            Surface(
+                shape = MaterialTheme.shapes.medium,
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            ) {
+                Text(
+                    crashText.orEmpty().take(4000),
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(8.dp),
+                )
+            }
+            Row {
+                OutlinedButton(
+                    onClick = {
+                        val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
+                        clipboard.setPrimaryClip(
+                            android.content.ClipData.newPlainText("Heim-AI Absturz", crashText.orEmpty())
+                        )
+                    },
+                    modifier = Modifier.weight(1f).padding(end = 4.dp),
+                ) { Text("Kopieren") }
+                OutlinedButton(
+                    onClick = {
+                        CrashLog.clear(context)
+                        crashText = null
+                    },
+                    modifier = Modifier.weight(1f).padding(start = 4.dp),
+                ) { Text("Löschen") }
+            }
         }
     }
 }

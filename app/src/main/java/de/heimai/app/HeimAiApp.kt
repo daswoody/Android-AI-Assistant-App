@@ -2,6 +2,7 @@ package de.heimai.app
 
 import android.app.Application
 import de.heimai.app.core.AppContainer
+import de.heimai.app.core.CrashLog
 
 class HeimAiApp : Application() {
 
@@ -10,6 +11,9 @@ class HeimAiApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // Abstürze aufzeichnen, BEVOR irgendetwas anderes initialisiert wird —
+        // der Stacktrace ist danach in den Einstellungen unter "Diagnose" abrufbar.
+        CrashLog.install(this)
         container = AppContainer(this)
     }
 

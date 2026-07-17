@@ -73,7 +73,10 @@ fun HomeScreen(
             conversations = container.api.conversations().conversations
             error = null
         } catch (e: Exception) {
-            error = "Verlauf nicht abrufbar (Server offline?)"
+            // Konkrete Ursache anzeigen (HTTP-Code, Parse-Fehler, DNS …) —
+            // ein pauschales "Server offline?" hat sich als irreführend erwiesen.
+            android.util.Log.w("HomeScreen", "Verlauf nicht abrufbar", e)
+            error = "Verlauf nicht abrufbar: ${e.message?.take(200) ?: e.javaClass.simpleName}"
         }
         loading = false
     }
