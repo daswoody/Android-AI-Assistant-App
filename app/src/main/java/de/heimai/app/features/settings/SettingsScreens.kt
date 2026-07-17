@@ -236,10 +236,10 @@ fun AiSettingsScreen(onBack: () -> Unit) {
         }
     }
 
-    // Import eines eigenen openWakeWord-Modells (.tflite)
+    // Import eines eigenen openWakeWord-Modells (.onnx)
     val modelLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
-            val path = WakeWordImport.copyToStorage(context, uri, "custom_wakeword.tflite")
+            val path = WakeWordImport.copyToStorage(context, uri, "custom_wakeword.onnx")
             if (path != null) scope.launch {
                 container.settings.setCustomWakeWordPath(path)
                 container.settings.setWakeWordKeyword(OpenWakeWordEngine.CUSTOM)
@@ -351,7 +351,7 @@ fun AiSettingsScreen(onBack: () -> Unit) {
             Column(Modifier.weight(1f)) {
                 Text("Wake-Word-Erkennung")
                 Text(
-                    "Lokal & offline mit openWakeWord (TensorFlow Lite). Energiesparend: die " +
+                    "Lokal & offline mit openWakeWord (ONNX Runtime). Energiesparend: die " +
                         "Erkennung läuft nur, wenn Geräusch anliegt.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -462,7 +462,7 @@ fun AiSettingsScreen(onBack: () -> Unit) {
                 Text(label)
             }
         }
-        // Eigenes openWakeWord-Modell (.tflite)
+        // Eigenes openWakeWord-Modell (.onnx)
         Row(
             Modifier.fillMaxWidth().clickable {
                 if (settings.customWakeWordPath.isNotBlank()) selectKeyword(OpenWakeWordEngine.CUSTOM)
@@ -482,14 +482,14 @@ fun AiSettingsScreen(onBack: () -> Unit) {
         }
         Text(
             "Eigene Wake Words trainierst du kostenlos mit openWakeWord (auch deutsch) und " +
-                "importierst die .tflite-Datei hier.",
+                "importierst die .onnx-Datei hier.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         OutlinedButton(
             onClick = { modelLauncher.launch(arrayOf("*/*")) },
             modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-        ) { Text(if (settings.customWakeWordPath.isBlank()) "Eigenes .tflite wählen" else ".tflite ersetzen") }
+        ) { Text(if (settings.customWakeWordPath.isBlank()) "Eigenes .onnx wählen" else ".onnx ersetzen") }
 
         Spacer(Modifier.height(8.dp))
         Text("Empfindlichkeit: ${settings.wakeWordThreshold}%", style = MaterialTheme.typography.bodyMedium)

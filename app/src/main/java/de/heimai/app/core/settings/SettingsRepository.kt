@@ -22,9 +22,9 @@ data class AppSettings(
     val darkMode: String = "system", // system | dark | light
     val voiceId: String = "",
     val wakeWordEnabled: Boolean = false,
-    /** openWakeWord-Modell: Asset-Dateiname (z. B. "hey_jarvis_v0.1.tflite") oder "CUSTOM" */
-    val wakeWordKeyword: String = "hey_jarvis_v0.1.tflite",
-    /** Pfad zu einem importierten eigenen openWakeWord-Modell (.tflite) */
+    /** openWakeWord-Modell: Asset-Dateiname (z. B. "hey_jarvis_v0.1.onnx") oder "CUSTOM" */
+    val wakeWordKeyword: String = "hey_jarvis_v0.1.onnx",
+    /** Pfad zu einem importierten eigenen openWakeWord-Modell (.onnx) */
     val customWakeWordPath: String = "",
     /** Auslöseschwelle 0..100 (Prozent) für den openWakeWord-Klassifikator */
     val wakeWordThreshold: Int = 50,
@@ -100,11 +100,16 @@ class SettingsRepository(private val context: Context) {
             darkMode = p[Keys.DARK_MODE] ?: "system",
             voiceId = p[Keys.VOICE_ID] ?: "",
             wakeWordEnabled = p[Keys.WAKE_WORD_ENABLED] ?: false,
-            // Migration Porcupine -> openWakeWord: Altbestände wie "COMPUTER"/"JARVIS"
-            // sind keine .tflite-Modelle mehr — sonst stirbt die Engine beim Laden
-            // von assets/openwakeword/COMPUTER stumm. Auf das Default-Modell mappen.
-            wakeWordKeyword = (p[Keys.WAKE_WORD_KEYWORD] ?: "hey_jarvis_v0.1.tflite").let {
-                if (it == "CUSTOM" || it.endsWith(".tflite")) it else "hey_jarvis_v0.1.tflite"
+            // Migration beim Lesen: TFLite-Bestandswerte ("alexa_v0.1.tflite") auf die
+            // ONNX-Pendants mappen (TFLite-Java kann die dynamischen openWakeWord-Modelle
+            // nicht laden — die Engine läuft jetzt auf ONNX Runtime); Porcupine-Altwerte
+            // ("COMPUTER"/"JARVIS") auf das Default-Modell.
+            wakeWordKeyword = (p[Keys.WAKE_WORD_KEYWORD] ?: "hey_jarvis_v0.1.onnx").let {
+                when {
+                    it == "CUSTOM" || it.endsWith(".onnx") -> it
+                    it.endsWith(".tflite") -> it.removeSuffix(".tflite") + ".onnx"
+                    else -> "hey_jarvis_v0.1.onnx"
+                }
             },
             customWakeWordPath = p[Keys.CUSTOM_PPN_PATH] ?: "",
             wakeWordThreshold = p[Keys.WAKE_WORD_THRESHOLD] ?: 50,

@@ -23,7 +23,7 @@ import de.heimai.app.assistant.HeimVoiceInteractionService
 
 /**
  * Dauerhaft laufender Microphone-Foreground-Service für die
- * Wake-Word-Erkennung mit openWakeWord (TFLite). Energie-Profil: die teure
+ * Wake-Word-Erkennung mit openWakeWord (ONNX Runtime). Energie-Profil: die teure
  * ML-Pipeline läuft nur bei Geräusch (Pegel-Gate in der Engine); bei Stille
  * kostet nur das offene Mikrofon + RMS Strom.
  *

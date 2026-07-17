@@ -5,9 +5,9 @@ import android.net.Uri
 import java.io.File
 
 /**
- * Kopiert eine per Dokumenten-Picker gewählte Wake-Word-Datei (.ppn bzw.
- * Sprachmodell .pv) in den App-internen Speicher. Porcupine benötigt einen
- * echten Dateipfad — ein content://-Uri funktioniert nicht direkt.
+ * Kopiert ein per Dokumenten-Picker gewähltes openWakeWord-Modell (.onnx)
+ * in den App-internen Speicher. Die Engine benötigt einen echten Dateipfad —
+ * ein content://-Uri funktioniert nicht direkt.
  */
 object WakeWordImport {
 
