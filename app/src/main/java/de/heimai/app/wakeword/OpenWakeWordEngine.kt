@@ -154,11 +154,13 @@ class OpenWakeWordEngine(
     @SuppressLint("MissingPermission")
     private fun loop() {
         Log.i(TAG, "Engine-Thread gestartet (Modell=$wakeWordModel, custom=${customModelPath.isNotBlank()})")
+        WakeWordDiagnostics.starting()
         try {
             setup()
         } catch (e: Exception) {
             Log.e(TAG, "openWakeWord-Modelle konnten nicht geladen werden", e)
             running = false
+            WakeWordDiagnostics.error("Modell '$wakeWordModel': ${e.message}")
             onFatal("Wake-Word-Modell '$wakeWordModel' konnte nicht geladen werden: ${e.message}")
             return
         }
@@ -175,6 +177,7 @@ class OpenWakeWordEngine(
             Log.e(TAG, "AudioRecord nicht initialisierbar (Mikrofon belegt?)")
             record.release()
             running = false
+            WakeWordDiagnostics.error("Mikrofon nicht verfügbar")
             onFatal("Mikrofon nicht verfügbar (von anderer App/Session belegt?)")
             return
         }
@@ -189,6 +192,9 @@ class OpenWakeWordEngine(
             TAG,
             "Modelle geladen: mel=${melOutShape.joinToString("x")} " +
                 "emb=$embOutFloats gate=$energyGate gateRms=$gateRms threshold=$threshold"
+        )
+        WakeWordDiagnostics.running(
+            if (customModelPath.isNotBlank()) "Eigenes Modell" else wakeWordModel
         )
 
         val melFrames = ArrayDeque<FloatArray>()  // je melBins Werte
@@ -213,6 +219,7 @@ class OpenWakeWordEngine(
         var wasActive = false
         var maxScore = 0f
         var lastScoreLogMs = 0L
+        var lastDiagMs = 0L
 
         val audio = ShortArray(CHUNK)
         try {
@@ -234,9 +241,14 @@ class OpenWakeWordEngine(
                 // bei Sprache heißt: Klassifikator lief nicht (Gate öffnet nicht? rms
                 // mit gateRms vergleichen) oder Modell erkennt nichts.
                 if (now - lastScoreLogMs > 3_000) {
-                    Log.d(TAG, "maxScore=%.2f rms=%.0f gateAktiv=%b".format(maxScore, rms, wasActive))
+                    Log.i(TAG, "maxScore=%.2f rms=%.0f gateAktiv=%b".format(maxScore, rms, wasActive))
                     maxScore = 0f
                     lastScoreLogMs = now
+                }
+                // Live-Anzeige für die Einstellungs-UI (~5×/s reicht)
+                if (now - lastDiagMs > 200) {
+                    WakeWordDiagnostics.level(rms.toInt(), maxScore, wasActive || !energyGate)
+                    lastDiagMs = now
                 }
 
                 // --- Energie-Gate ---
@@ -287,10 +299,13 @@ class OpenWakeWordEngine(
             }
         } catch (e: Exception) {
             Log.e(TAG, "Wake-Word-Schleife abgebrochen", e)
+            WakeWordDiagnostics.error("Abgestürzt: ${e.message}")
             onFatal("Wake-Word-Erkennung abgestürzt: ${e.message}")
         } finally {
             runCatching { record.stop() }
             record.release()
+            // ERROR bleibt stehen (siehe WakeWordDiagnostics.stopped)
+            WakeWordDiagnostics.stopped()
         }
     }
 

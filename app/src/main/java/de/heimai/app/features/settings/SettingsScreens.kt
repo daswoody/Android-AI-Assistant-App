@@ -8,7 +8,9 @@ import android.net.Uri
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -18,6 +20,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -30,6 +33,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -51,6 +55,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import de.heimai.app.HeimAiApp
@@ -59,6 +64,7 @@ import de.heimai.app.core.network.Voice
 import de.heimai.app.core.settings.AppSettings
 import de.heimai.app.ui.theme.THEMES
 import de.heimai.app.wakeword.OpenWakeWordEngine
+import de.heimai.app.wakeword.WakeWordDiagnostics
 import de.heimai.app.wakeword.WakeWordImport
 import de.heimai.app.wakeword.WakeWordService
 import kotlinx.coroutines.launch
@@ -370,6 +376,76 @@ fun AiSettingsScreen(onBack: () -> Unit) {
                     }
                 },
             )
+        }
+        Spacer(Modifier.height(8.dp))
+
+        // Live-Status der Engine: macht ohne adb sichtbar, ob wirklich gelauscht
+        // wird — inkl. Pegel (öffnet das Gate?) und Score (reagiert das Modell?).
+        val diag by WakeWordDiagnostics.state.collectAsState()
+        Surface(
+            shape = MaterialTheme.shapes.medium,
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(Modifier.padding(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier.size(10.dp).background(
+                            when (diag.state) {
+                                WakeWordDiagnostics.State.RUNNING -> Color(0xFF4CAF50)
+                                WakeWordDiagnostics.State.STARTING -> Color(0xFFFFC107)
+                                WakeWordDiagnostics.State.ERROR -> MaterialTheme.colorScheme.error
+                                WakeWordDiagnostics.State.OFF -> MaterialTheme.colorScheme.outline
+                            },
+                            CircleShape,
+                        )
+                    )
+                    Spacer(Modifier.size(8.dp))
+                    Text(
+                        when (diag.state) {
+                            WakeWordDiagnostics.State.RUNNING -> "Lauscht — ${diag.detail}"
+                            WakeWordDiagnostics.State.STARTING -> "Startet …"
+                            WakeWordDiagnostics.State.ERROR -> "Fehler"
+                            WakeWordDiagnostics.State.OFF ->
+                                if (diag.detail.isBlank()) "Aus" else "Aus — ${diag.detail}"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+                if (diag.state == WakeWordDiagnostics.State.ERROR) {
+                    Text(
+                        diag.detail,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                if (diag.state == WakeWordDiagnostics.State.RUNNING) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Pegel ${diag.rms}" + when {
+                            !settings.wakeWordEnergyGate -> ""
+                            diag.gateActive -> " · Gate offen"
+                            else -> " · Gate zu (öffnet ab ${settings.wakeWordGateRms})"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    LinearProgressIndicator(
+                        progress = { (diag.rms / 4000f).coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Score %.2f · löst aus ab %.2f".format(diag.score, settings.wakeWordThreshold / 100f),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    LinearProgressIndicator(
+                        progress = { diag.score.coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
         }
         Spacer(Modifier.height(8.dp))
 

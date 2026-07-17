@@ -62,6 +62,13 @@ class WakeWordService : Service() {
                 "Start abgelehnt: enabled=${settings.wakeWordEnabled} " +
                     "configReady=$configReady mic=${hasMicPermission()} modell=${settings.wakeWordKeyword}"
             )
+            WakeWordDiagnostics.stopped(
+                when {
+                    !settings.wakeWordEnabled -> "in den Einstellungen deaktiviert"
+                    !configReady -> "kein eigenes Modell importiert"
+                    else -> "Mikrofon-Berechtigung fehlt"
+                }
+            )
             stopSelf()
             return START_NOT_STICKY
         }
@@ -101,6 +108,7 @@ class WakeWordService : Service() {
         } catch (e: Exception) {
             builtSignature = null
             Log.e(TAG, "Wake-Word-Engine konnte nicht starten", e)
+            WakeWordDiagnostics.error("Engine-Start fehlgeschlagen: ${e.message}")
             stopSelf()
             return START_NOT_STICKY
         }
@@ -139,6 +147,7 @@ class WakeWordService : Service() {
     fun pauseDetection() {
         paused = true
         engine?.stop()
+        WakeWordDiagnostics.stopped("pausiert (Assistent nutzt das Mikrofon)")
     }
 
     fun resumeDetection() {
