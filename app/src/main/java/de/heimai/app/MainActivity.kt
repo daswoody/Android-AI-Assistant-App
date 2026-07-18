@@ -89,6 +89,9 @@ private fun AppNavHost(startDestination: String, settings: AppSettings) {
                 onOpenChat = { id -> navController.navigate("chat?id=$id") },
                 onTalk = { navController.navigate("talk") },
                 onSettings = { navController.navigate("settings") },
+                onSessionExpired = {
+                    navController.navigate("login") { popUpTo(0) { inclusive = true } }
+                },
             )
         }
         composable(

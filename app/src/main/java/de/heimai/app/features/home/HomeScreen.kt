@@ -26,6 +26,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -42,6 +43,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import de.heimai.app.HeimAiApp
+import de.heimai.app.core.network.ApiException
 import de.heimai.app.core.network.RemoteConversation
 import de.heimai.app.core.settings.AppSettings
 import kotlinx.coroutines.launch
@@ -58,6 +60,7 @@ fun HomeScreen(
     onOpenChat: (String) -> Unit,
     onTalk: () -> Unit,
     onSettings: () -> Unit,
+    onSessionExpired: () -> Unit = {},
 ) {
     val container = HeimAiApp.from(LocalContext.current.applicationContext as android.app.Application).container
     val scope = rememberCoroutineScope()
@@ -66,17 +69,24 @@ fun HomeScreen(
     var conversations by remember { mutableStateOf<List<RemoteConversation>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
+    var sessionExpired by remember { mutableStateOf(false) }
 
     suspend fun refresh() {
         loading = true
         try {
             conversations = container.api.conversations().conversations
             error = null
+            sessionExpired = false
         } catch (e: Exception) {
             // Konkrete Ursache anzeigen (HTTP-Code, Parse-Fehler, DNS …) —
             // ein pauschales "Server offline?" hat sich als irreführend erwiesen.
             android.util.Log.w("HomeScreen", "Verlauf nicht abrufbar", e)
-            error = "Verlauf nicht abrufbar: ${e.message?.take(200) ?: e.javaClass.simpleName}"
+            sessionExpired = e is ApiException && e.code == 401
+            error = if (sessionExpired) {
+                "Sitzung abgelaufen — bitte neu anmelden."
+            } else {
+                "Verlauf nicht abrufbar: ${e.message?.take(200) ?: e.javaClass.simpleName}"
+            }
         }
         loading = false
     }
@@ -141,11 +151,24 @@ fun HomeScreen(
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                error != null -> Text(
-                    error!!,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.error,
-                )
+                error != null -> Column {
+                    Text(
+                        error!!,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    // Abgelaufenes Token: direkt zur Neuanmeldung führen, statt
+                    // weiter einen scheinbar angemeldeten Zustand vorzutäuschen.
+                    if (sessionExpired) {
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(onClick = {
+                            scope.launch {
+                                container.settings.logout()
+                                onSessionExpired()
+                            }
+                        }) { Text("Neu anmelden") }
+                    }
+                }
                 conversations.isEmpty() -> Text(
                     "Noch keine Gespräche. Starte einen Chat oder sag das Wake Word.",
                     style = MaterialTheme.typography.bodyMedium,
