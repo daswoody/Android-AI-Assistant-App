@@ -422,11 +422,19 @@ fun AiSettingsScreen(onBack: () -> Unit) {
                 }
                 if (diag.state == WakeWordDiagnostics.State.RUNNING) {
                     Spacer(Modifier.height(8.dp))
+                    if (!settings.wakeWordEnergyGate) {
+                        Text(
+                            "⚠ Energie-Gate aus: Erkennung läuft pausenlos — deutlich höherer " +
+                                "Akkuverbrauch. Für den Alltag unten wieder einschalten.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
                     Text(
                         "Pegel ${diag.rms}" + when {
-                            !settings.wakeWordEnergyGate -> ""
-                            diag.gateActive -> " · Gate offen"
-                            else -> " · Gate zu (öffnet ab ${settings.wakeWordGateRms})"
+                            !settings.wakeWordEnergyGate -> " · Daueranalyse (Gate aus)"
+                            diag.gateActive -> " · Gate offen (Schwelle ${diag.gateLimit})"
+                            else -> " · schläft — Gate öffnet ab ${diag.gateLimit}"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,

@@ -28,6 +28,8 @@ object WakeWordDiagnostics {
         val score: Float = 0f,
         /** Energie-Gate gerade offen (ML-Pipeline aktiv)? */
         val gateActive: Boolean = false,
+        /** Effektive (adaptive) Gate-Schwelle; 0 = Gate deaktiviert. */
+        val gateLimit: Int = 0,
     )
 
     private val _state = MutableStateFlow(Diag())
@@ -37,8 +39,10 @@ object WakeWordDiagnostics {
 
     fun running(model: String) = _state.update { Diag(State.RUNNING, detail = model) }
 
-    fun level(rms: Int, score: Float, gateActive: Boolean) = _state.update {
-        if (it.state == State.RUNNING) it.copy(rms = rms, score = score, gateActive = gateActive) else it
+    fun level(rms: Int, score: Float, gateActive: Boolean, gateLimit: Int = 0) = _state.update {
+        if (it.state == State.RUNNING) {
+            it.copy(rms = rms, score = score, gateActive = gateActive, gateLimit = gateLimit)
+        } else it
     }
 
     fun error(reason: String) = _state.update { Diag(State.ERROR, detail = reason) }

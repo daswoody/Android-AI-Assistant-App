@@ -208,6 +208,12 @@ class OpenWakeWordEngine(
         var maxScore = 0f
         var lastScoreLogMs = 0L
         var lastDiagMs = 0L
+        // Adaptives Grundrauschen fürs Energie-Gate: Geräte-AGC (v. a. Samsung)
+        // hebt in ruhigen Räumen das Rauschen an — eine rein absolute Schwelle
+        // liegt dann dauerhaft unter dem Pegel, das Gate schließt NIE und die
+        // ML-Pipeline läuft 24/7 (exorbitanter Akkuverbrauch). Deshalb: Schwelle
+        // relativ zum nachgeführten Grundrauschen, gateRms nur noch als Minimum.
+        var noiseFloor = gateRms
 
         val audio = ShortArray(CHUNK)
         try {
@@ -224,24 +230,39 @@ class OpenWakeWordEngine(
                 val now = System.currentTimeMillis()
                 val rms = rmsOf(audio, read)
 
+                // Grundrauschen nachführen: schnell nach unten, träge nach oben.
+                // Die Gate-Schwelle liegt damit immer ÜBER dem Dauerpegel der
+                // Umgebung — auch bei Dauerbeschallung (TV, Lüfter) oder
+                // AGC-angehobenem Rauschen schläft die ML wieder ein; nur ein
+                // Pegel-SPRUNG (Sprache) öffnet das Gate. gateRms ist das Minimum.
+                noiseFloor = if (rms < noiseFloor) noiseFloor * 0.7 + rms * 0.3
+                else noiseFloor * 0.995 + rms * 0.005
+                val gateLimit = maxOf(gateRms, noiseFloor * GATE_FACTOR)
+
                 // Debug-Hilfe (adb logcat -s OpenWakeWord): alle ~3 s höchster Score
                 // seit dem letzten Log + aktueller Pegel + Gate-Zustand. maxScore=0.00
                 // bei Sprache heißt: Klassifikator lief nicht (Gate öffnet nicht? rms
-                // mit gateRms vergleichen) oder Modell erkennt nichts.
+                // mit gateLimit vergleichen) oder Modell erkennt nichts.
                 if (now - lastScoreLogMs > 3_000) {
-                    Log.i(TAG, "maxScore=%.2f rms=%.0f gateAktiv=%b".format(maxScore, rms, wasActive))
+                    Log.i(
+                        TAG,
+                        "maxScore=%.2f rms=%.0f gateAktiv=%b gateLimit=%.0f".format(maxScore, rms, wasActive, gateLimit)
+                    )
                     maxScore = 0f
                     lastScoreLogMs = now
                 }
                 // Live-Anzeige für die Einstellungs-UI (~5×/s reicht)
                 if (now - lastDiagMs > 200) {
-                    WakeWordDiagnostics.level(rms.toInt(), maxScore, wasActive || !energyGate)
+                    WakeWordDiagnostics.level(
+                        rms.toInt(), maxScore, wasActive || !energyGate,
+                        if (energyGate) gateLimit.toInt() else 0,
+                    )
                     lastDiagMs = now
                 }
 
-                // --- Energie-Gate ---
+                // --- Energie-Gate (adaptive Schwelle, s. o.) ---
                 if (energyGate) {
-                    if (rms > gateRms) lastVoiceMs = now
+                    if (rms > gateLimit) lastVoiceMs = now
                     val active = (now - lastVoiceMs) < GATE_HANGOVER_MS
                     if (!active) {
                         // ML schläft. Nur Pre-Roll pflegen.
@@ -376,6 +397,7 @@ class OpenWakeWordEngine(
         const val COOLDOWN_MS = 2_000L    // Nach Auslösung kurz aussetzen
         const val GATE_HANGOVER_MS = 1_500L // Nach letztem Pegel-Peak noch aktiv bleiben
         const val PREROLL_CHUNKS = 8      // ~640 ms Vorlauf für den Wortanfang
+        const val GATE_FACTOR = 2.0       // Gate öffnet ab Grundrauschen × Faktor (mind. gateRms)
 
         /** Mitgelieferte Wake-Word-Modelle (Anzeigename → Asset-Datei). */
         val BUILT_IN = linkedMapOf(
