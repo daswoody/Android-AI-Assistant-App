@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Heim-AI</string>
+    <string name="notification_listener_label">Heim-AI Benachrichtigungszugriff</string>
+    <string name="wakeword_channel_name">Wake-Word-Erkennung</string>
+    <string name="wakeword_notification_title">Heim-AI hört auf das Wake Word</string>
+    <string name="wakeword_notification_text">Tippen zum Öffnen der App</string>
+</resources>

@@ -1,0 +1,55 @@
+# Baut bei jedem Push eine installierbare Debug-APK und hängt sie als
+# Artifact an den Workflow-Lauf (Actions-Tab → Lauf öffnen → "heimai-debug-apk").
+# Die Debug-APK ist mit dem Debug-Key signiert und lässt sich direkt
+# per Sideload installieren ("Unbekannte Quellen" erlauben).
+name: Android APK
+
+on:
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      # Actions schon jetzt auf Node 24 laufen lassen (Node 20 ist ab 2026-06-16 deprecated)
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: JDK 17 einrichten
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Android SDK einrichten
+        uses: android-actions/setup-android@v3
+
+      # openWakeWord-Modelle (ONNX) in die App-Assets laden. Bewusst NICHT im Git
+      # (Binärdateien) — der Runner hat Internet und zieht sie beim Build.
+      # ONNX statt TFLite: TFLite-Java kann die dynamischen Shapes der Modelle
+      # nicht allokieren (openWakeWord#223) — die Engine läuft auf ONNX Runtime.
+      - name: openWakeWord-Modelle laden
+        run: |
+          set -euo pipefail
+          dir="app/src/main/assets/openwakeword"
+          mkdir -p "$dir"
+          base="https://github.com/dscripka/openWakeWord/releases/download/v0.5.1"
+          for m in melspectrogram embedding_model alexa_v0.1 hey_jarvis_v0.1 hey_mycroft_v0.1; do
+            echo "Lade $m.onnx"
+            curl -fSL --retry 4 --retry-delay 3 -o "$dir/$m.onnx" "$base/$m.onnx"
+          done
+          ls -la "$dir"
+
+      - name: Debug-APK bauen
+        run: ./gradlew --no-daemon assembleDebug
+
+      - name: APK hochladen
+        uses: actions/upload-artifact@v5
+        with:
+          name: heimai-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30

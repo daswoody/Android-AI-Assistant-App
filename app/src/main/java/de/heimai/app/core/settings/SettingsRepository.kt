@@ -1,0 +1,166 @@
+package de.heimai.app.core.settings
+
+import android.content.Context
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.preferencesDataStore
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.runBlocking
+
+private val Context.dataStore by preferencesDataStore(name = "settings")
+
+data class AppSettings(
+    val serverUrl: String = "",
+    val authToken: String = "",
+    val userName: String = "",
+    val userTier: Int = 1,
+    val themeName: String = "Indigo",
+    val darkMode: String = "system", // system | dark | light
+    val voiceId: String = "",
+    val wakeWordEnabled: Boolean = false,
+    /** openWakeWord-Modell: Asset-Dateiname (z. B. "hey_jarvis_v0.1.onnx") oder "CUSTOM" */
+    val wakeWordKeyword: String = "hey_jarvis_v0.1.onnx",
+    /** Pfad zu einem importierten eigenen openWakeWord-Modell (.onnx) */
+    val customWakeWordPath: String = "",
+    /** Auslöseschwelle 0..100 (Prozent) für den openWakeWord-Klassifikator */
+    val wakeWordThreshold: Int = 50,
+    /** Energiesparen: ML-Pipeline nur laufen lassen, wenn der Mikrofonpegel eine Schwelle übersteigt */
+    val wakeWordEnergyGate: Boolean = true,
+    /** RMS-Schwelle des Energie-Gates */
+    val wakeWordGateRms: Int = 500,
+    /** Realtime Talk: Stille-Dauer in ms, nach der automatisch gesendet wird */
+    val talkSilenceMs: Int = 900,
+    /** Realtime Talk: Lautstärke-Schwelle (RMS) ab der Sprache erkannt wird */
+    val talkThreshold: Int = 400,
+    /**
+     * Realtime Talk: Half-Duplex. Wenn true, pausiert das Mikrofon während der
+     * KI-Antwort — kein Reinreden möglich, aber die KI hört sich garantiert nicht
+     * selbst (robuste Lösung für Geräte ohne gute Echo-Unterdrückung).
+     */
+    val talkHalfDuplex: Boolean = false,
+    /**
+     * Realtime Talk: Echo-Unterdrückung über den Kommunikations-Audiomodus.
+     * Wenn true, läuft der Talk wie ein Freisprech-Telefonat (MODE_IN_COMMUNICATION,
+     * VOICE_COMMUNICATION-Aufnahme, Wiedergabe auf dem Voice-Call-Pfad) — damit greift
+     * die geräteeigene, anrufqualitäts-Echo-Unterdrückung (Full-Duplex, Barge-in möglich).
+     */
+    val talkAec: Boolean = true,
+    /**
+     * Rechte-Modus: true = bei entsperrtem Gerät keine separate Bestätigung
+     * für sensible Tool-Aktionen; false = immer bestätigen.
+     */
+    val relaxedSecurity: Boolean = false,
+    val ttsFallbackEnabled: Boolean = true,
+    val cardLayoutsVersion: Int = 0,
+) {
+    val isConfigured: Boolean get() = serverUrl.isNotBlank()
+    val isLoggedIn: Boolean get() = authToken.isNotBlank()
+
+    /** openWakeWord braucht keinen Lizenz-Key — Wake Word ist nutzbar, sobald es eingeschaltet ist. */
+    val wakeWordReady: Boolean
+        get() = wakeWordKeyword != "CUSTOM" || customWakeWordPath.isNotBlank()
+}
+
+class SettingsRepository(private val context: Context) {
+
+    private object Keys {
+        val SERVER_URL = stringPreferencesKey("server_url")
+        val AUTH_TOKEN = stringPreferencesKey("auth_token")
+        val USER_NAME = stringPreferencesKey("user_name")
+        val USER_TIER = intPreferencesKey("user_tier")
+        val THEME_NAME = stringPreferencesKey("theme_name")
+        val DARK_MODE = stringPreferencesKey("dark_mode")
+        val VOICE_ID = stringPreferencesKey("voice_id")
+        val WAKE_WORD_ENABLED = booleanPreferencesKey("wake_word_enabled")
+        val WAKE_WORD_KEYWORD = stringPreferencesKey("wake_word_keyword")
+        val CUSTOM_PPN_PATH = stringPreferencesKey("custom_wake_word_path")
+        val WAKE_WORD_THRESHOLD = intPreferencesKey("wake_word_threshold")
+        val WAKE_WORD_ENERGY_GATE = booleanPreferencesKey("wake_word_energy_gate")
+        val WAKE_WORD_GATE_RMS = intPreferencesKey("wake_word_gate_rms")
+        val TALK_SILENCE_MS = intPreferencesKey("talk_silence_ms")
+        val TALK_THRESHOLD = intPreferencesKey("talk_threshold")
+        val TALK_HALF_DUPLEX = booleanPreferencesKey("talk_half_duplex")
+        val TALK_AEC = booleanPreferencesKey("talk_aec")
+        val RELAXED_SECURITY = booleanPreferencesKey("relaxed_security")
+        val TTS_FALLBACK = booleanPreferencesKey("tts_fallback")
+        val CARD_LAYOUTS_VERSION = intPreferencesKey("card_layouts_version")
+    }
+
+    val settings: Flow<AppSettings> = context.dataStore.data.map { p ->
+        AppSettings(
+            serverUrl = p[Keys.SERVER_URL] ?: "",
+            authToken = p[Keys.AUTH_TOKEN] ?: "",
+            userName = p[Keys.USER_NAME] ?: "",
+            userTier = p[Keys.USER_TIER] ?: 1,
+            themeName = p[Keys.THEME_NAME] ?: "Indigo",
+            darkMode = p[Keys.DARK_MODE] ?: "system",
+            voiceId = p[Keys.VOICE_ID] ?: "",
+            wakeWordEnabled = p[Keys.WAKE_WORD_ENABLED] ?: false,
+            // Migration beim Lesen: TFLite-Bestandswerte ("alexa_v0.1.tflite") auf die
+            // ONNX-Pendants mappen (TFLite-Java kann die dynamischen openWakeWord-Modelle
+            // nicht laden — die Engine läuft jetzt auf ONNX Runtime); Porcupine-Altwerte
+            // ("COMPUTER"/"JARVIS") auf das Default-Modell.
+            wakeWordKeyword = (p[Keys.WAKE_WORD_KEYWORD] ?: "hey_jarvis_v0.1.onnx").let {
+                when {
+                    it == "CUSTOM" || it.endsWith(".onnx") -> it
+                    it.endsWith(".tflite") -> it.removeSuffix(".tflite") + ".onnx"
+                    else -> "hey_jarvis_v0.1.onnx"
+                }
+            },
+            customWakeWordPath = p[Keys.CUSTOM_PPN_PATH] ?: "",
+            wakeWordThreshold = p[Keys.WAKE_WORD_THRESHOLD] ?: 50,
+            wakeWordEnergyGate = p[Keys.WAKE_WORD_ENERGY_GATE] ?: true,
+            wakeWordGateRms = p[Keys.WAKE_WORD_GATE_RMS] ?: 500,
+            talkSilenceMs = p[Keys.TALK_SILENCE_MS] ?: 900,
+            talkThreshold = p[Keys.TALK_THRESHOLD] ?: 400,
+            talkHalfDuplex = p[Keys.TALK_HALF_DUPLEX] ?: false,
+            talkAec = p[Keys.TALK_AEC] ?: true,
+            relaxedSecurity = p[Keys.RELAXED_SECURITY] ?: false,
+            ttsFallbackEnabled = p[Keys.TTS_FALLBACK] ?: true,
+            cardLayoutsVersion = p[Keys.CARD_LAYOUTS_VERSION] ?: 0,
+        )
+    }
+
+    suspend fun current(): AppSettings = settings.first()
+
+    /** Nur für Stellen ohne Coroutine-Kontext (z. B. Service-onCreate). */
+    fun currentBlocking(): AppSettings = runBlocking { settings.first() }
+
+    suspend fun setServerUrl(url: String) = edit { it[Keys.SERVER_URL] = url.trim().trimEnd('/') }
+    suspend fun setAuth(token: String, userName: String, tier: Int) = edit {
+        it[Keys.AUTH_TOKEN] = token
+        it[Keys.USER_NAME] = userName
+        it[Keys.USER_TIER] = tier
+    }
+
+    suspend fun logout() = edit {
+        it[Keys.AUTH_TOKEN] = ""
+        it[Keys.USER_NAME] = ""
+        it[Keys.USER_TIER] = 1
+    }
+
+    suspend fun setTheme(name: String) = edit { it[Keys.THEME_NAME] = name }
+    suspend fun setDarkMode(mode: String) = edit { it[Keys.DARK_MODE] = mode }
+    suspend fun setVoiceId(id: String) = edit { it[Keys.VOICE_ID] = id }
+    suspend fun setWakeWordEnabled(enabled: Boolean) = edit { it[Keys.WAKE_WORD_ENABLED] = enabled }
+    suspend fun setWakeWordKeyword(keyword: String) = edit { it[Keys.WAKE_WORD_KEYWORD] = keyword }
+    suspend fun setCustomWakeWordPath(path: String) = edit { it[Keys.CUSTOM_PPN_PATH] = path }
+    suspend fun setWakeWordThreshold(pct: Int) = edit { it[Keys.WAKE_WORD_THRESHOLD] = pct.coerceIn(5, 95) }
+    suspend fun setWakeWordEnergyGate(enabled: Boolean) = edit { it[Keys.WAKE_WORD_ENERGY_GATE] = enabled }
+    suspend fun setWakeWordGateRms(rms: Int) = edit { it[Keys.WAKE_WORD_GATE_RMS] = rms.coerceIn(50, 3000) }
+    suspend fun setTalkSilenceMs(ms: Int) = edit { it[Keys.TALK_SILENCE_MS] = ms.coerceIn(300, 5000) }
+    suspend fun setTalkThreshold(rms: Int) = edit { it[Keys.TALK_THRESHOLD] = rms.coerceIn(50, 4000) }
+    suspend fun setTalkHalfDuplex(enabled: Boolean) = edit { it[Keys.TALK_HALF_DUPLEX] = enabled }
+    suspend fun setTalkAec(enabled: Boolean) = edit { it[Keys.TALK_AEC] = enabled }
+    suspend fun setRelaxedSecurity(relaxed: Boolean) = edit { it[Keys.RELAXED_SECURITY] = relaxed }
+    suspend fun setTtsFallback(enabled: Boolean) = edit { it[Keys.TTS_FALLBACK] = enabled }
+    suspend fun setCardLayoutsVersion(v: Int) = edit { it[Keys.CARD_LAYOUTS_VERSION] = v }
+
+    private suspend fun edit(block: (androidx.datastore.preferences.core.MutablePreferences) -> Unit) {
+        context.dataStore.edit { block(it) }
+    }
+}
