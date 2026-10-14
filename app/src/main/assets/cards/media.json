@@ -1,0 +1,20 @@
+{
+  "card_type": "media",
+  "layout_version": 1,
+  "root": {
+    "component": "row",
+    "children": [
+      { "component": "image", "url": "{{data.cover_url}}", "size": 72 },
+      {
+        "component": "column",
+        "weight": 1,
+        "children": [
+          { "component": "text", "text": "{{data.title}}", "style": "title" },
+          { "component": "text", "text": "{{data.artist}}", "style": "body", "color": "muted" },
+          { "component": "badge", "text": "{{data.source}}" }
+        ]
+      },
+      { "component": "icon", "icon": "music", "size": 28, "color": "primary" }
+    ]
+  }
+}

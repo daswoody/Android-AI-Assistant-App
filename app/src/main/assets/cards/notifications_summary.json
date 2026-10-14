@@ -1,0 +1,29 @@
+{
+  "card_type": "notifications_summary",
+  "layout_version": 1,
+  "root": {
+    "component": "column",
+    "children": [
+      {
+        "component": "row",
+        "children": [
+          { "component": "icon", "icon": "notification", "size": 22, "color": "primary" },
+          { "component": "text", "text": "{{data.headline}}", "style": "title", "weight": 1 }
+        ]
+      },
+      { "component": "text", "text": "{{data.summary}}", "style": "body" },
+      { "component": "divider" },
+      {
+        "component": "list",
+        "items_path": "data.items",
+        "item_template": {
+          "component": "row",
+          "children": [
+            { "component": "text", "text": "{{app}}", "style": "label", "color": "primary" },
+            { "component": "text", "text": "{{text}}", "style": "body", "weight": 1 }
+          ]
+        }
+      }
+    ]
+  }
+}

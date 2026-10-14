@@ -1,0 +1,26 @@
+{
+  "card_type": "navigation",
+  "layout_version": 1,
+  "root": {
+    "component": "column",
+    "children": [
+      {
+        "component": "row",
+        "children": [
+          { "component": "icon", "icon": "navigation", "size": 22, "color": "primary" },
+          { "component": "text", "text": "{{data.destination}}", "style": "title", "weight": 1 }
+        ]
+      },
+      { "component": "text", "text": "{{data.eta}} · {{data.distance}}", "style": "body", "color": "muted" },
+      { "component": "spacer", "size": 8 },
+      {
+        "component": "button",
+        "action": {
+          "type": "device_tool",
+          "tool": "navigate_to",
+          "label": "Navigation starten"
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "card_type": "calendar",
+  "layout_version": 1,
+  "root": {
+    "component": "column",
+    "children": [
+      {
+        "component": "row",
+        "children": [
+          { "component": "icon", "icon": "calendar", "size": 22, "color": "primary" },
+          { "component": "text", "text": "{{data.headline}}", "style": "title", "weight": 1 }
+        ]
+      },
+      { "component": "divider" },
+      {
+        "component": "list",
+        "items_path": "data.events",
+        "item_template": {
+          "component": "column",
+          "children": [
+            { "component": "text", "text": "{{time}}", "style": "label", "color": "primary" },
+            { "component": "text", "text": "{{title}}", "style": "body" },
+            { "component": "text", "text": "{{location}}", "style": "label", "color": "muted" },
+            { "component": "spacer", "size": 6 }
+          ]
+        }
+      }
+    ]
+  }
+}

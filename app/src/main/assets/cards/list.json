@@ -1,0 +1,22 @@
+{
+  "card_type": "list",
+  "layout_version": 1,
+  "root": {
+    "component": "column",
+    "children": [
+      { "component": "text", "text": "{{data.headline}}", "style": "title" },
+      { "component": "spacer", "size": 4 },
+      {
+        "component": "list",
+        "items_path": "data.items",
+        "item_template": {
+          "component": "row",
+          "children": [
+            { "component": "icon", "icon": "check", "size": 18, "color": "primary" },
+            { "component": "text", "text": "{{text}}", "style": "body", "weight": 1 }
+          ]
+        }
+      }
+    ]
+  }
+}
