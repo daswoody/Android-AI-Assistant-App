@@ -114,7 +114,7 @@ typisch 24000 bei XTTS-v2).
 | `text_input` | `text` | Texteingabe statt Sprache |
 | `audio_chunk` | `data` (b64 PCM16/16k) | ~100-ms-Mikrofon-Chunk |
 | `audio_end` | – | Äußerung beendet. Push-to-Talk: beim Loslassen. **Realtime Talk:** die App erkennt Sprechpausen client-seitig (VAD) und sendet `audio_end` automatisch nach einer einstellbaren Stille (Default 900 ms); danach bleibt der Socket offen für die nächste Äußerung |
-| `interrupt` | – | Barge-in: laufende Antwort abbrechen (im Realtime Talk automatisch, wenn der Nutzer während der Antwort spricht) |
+| `interrupt` | – | Barge-in: laufende Antwort abbrechen (im Realtime Talk automatisch, wenn der Nutzer während der Antwort spricht — auch solange die Antwort noch entsteht und noch kein Audio kam). Der Server beantwortet **jedes** `interrupt` mit `done`. **Seit Orchestrator v1.26.1:** Mit LLM-Streaming kommen Text und Audio laufend; was zwischen `interrupt` und diesem `done` eintrifft (`assistant_text`, `audio_chunk`, `audio_end`, `card`, `tool_call`, `tool_activity`), gehört zum abgebrochenen Turn und wird verworfen (`TurnFrameGate`). Nach einem Abbruch kein TTS-Fallback |
 | `tool_result` | `call_id`, `ok` (bool), `result` (JSON) | Ergebnis eines Geräte-Tool-Aufrufs |
 
 ### 2.2 Server → Client
@@ -124,7 +124,7 @@ typisch 24000 bei XTTS-v2).
 | `session` | `session_id` | Optional, nach hello |
 | `conversation` | `conversation_id` | Zentrale Historie: Id des (neu angelegten oder fortgesetzten) Gesprächs — damit findet die App es später über `GET /v1/conversations/{id}` wieder |
 | `transcript` | `text`, `final` (bool) | STT-Zwischenstand / final |
-| `assistant_text` | `text`, `final` (bool) | Antwort-Text; Deltas mit `final:false`, Abschluss `final:true` (bei `final:true` darf `text` der Volltext sein, sonst leer) |
+| `assistant_text` | `text`, `final` (bool) | Antwort-Text; Deltas mit `final:false`, Abschluss `final:true` (bei `final:true` darf `text` der Volltext sein, sonst leer). **Seit Orchestrator v1.26** standardmäßig gestreamt (LLM-Streaming, im Admin-Panel abschaltbar): Deltas kommen, während das LLM schreibt, und `audio_chunk`s des ersten Satzes oft schon vor dem `final`. Endet ein Turn ohne `final` (Barge-in), bleibt der bisherige Text stehen; der nächste Turn bekommt eine eigene Nachricht |
 | `audio_chunk` | `data` (b64 PCM16), `sample_rate` | TTS-Audio-Stream (Filler über Piper zuerst, dann XTTS — für die App transparent) |
 | `audio_end` | – | TTS-Stream zu Ende |
 | `card` | `card{type,version,title?,data}` | Karten-Push parallel zur Sprachantwort. **ADDITIV (v1.12):** `type:"html"` → `data.html` ist ein fertiges HTML-Fragment (in isolierter WebView gerendert), optional `data.height` (px, auf 800 gekappt); übrige `data`-Keys sind Rohdaten. Unbekannte Typen → weiterhin `generic`-Fallback |

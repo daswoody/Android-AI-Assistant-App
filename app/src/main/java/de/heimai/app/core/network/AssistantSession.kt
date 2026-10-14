@@ -112,6 +112,10 @@ class AssistantSession(
     @Volatile private var userAudioThisTurn = false
     /** true, solange eine Sprech-Äußerung läuft (für sauberes audio_end) */
     @Volatile private var utteranceActive = false
+    /** true zwischen Anfrage (text_input/audio_end) und done — auch wenn noch kein Audio kam */
+    @Volatile private var turnActive = false
+    /** Verwirft nach einem interrupt die Frames des abgebrochenen Turns bis zu dessen done */
+    private val turnGate = TurnFrameGate()
     /** Zeitpunkt des letzten abgespielten Server-Audio-Chunks (Echo-Ausklang-Schutz) */
     @Volatile private var lastServerAudioAtMs = 0L
     /** Live einstellbare VAD-Parameter (Regler in der Talk-Oberfläche greifen sofort). */
@@ -160,6 +164,7 @@ class AssistantSession(
         // Texteingabe: KEIN TTS-Fallback (Server antwortet hier bewusst ohne Audio)
         userAudioThisTurn = false
         serverAudioThisTurn = false
+        turnActive = true
         send(buildJsonObject {
             put("type", "text_input")
             put("text", text)
@@ -251,6 +256,11 @@ class AssistantSession(
                                 bargeChunks++
                                 if (bargeChunks < BARGE_MIN_CHUNKS) return@collect
                                 interruptPlayback()
+                            } else if (turnActive) {
+                                // Nutzer spricht, während die Antwort noch entsteht (noch kein
+                                // Audio): alten Turn sauber beenden, statt dass sich seine
+                                // gestreamten Deltas in die neue Antwort mischen.
+                                interruptPlayback()
                             }
                             bargeChunks = 0
                             inUtterance = true
@@ -305,12 +315,22 @@ class AssistantSession(
         _state.value = _state.value.copy(listening = false)
     }
 
-    /** Barge-in: laufende Sprachausgabe abbrechen. */
+    /**
+     * Barge-in: laufende Antwort abbrechen. Auch wenn noch kein Audio kam (das
+     * LLM schreibt noch) — sonst liefe der alte Turn weiter, und seine
+     * gestreamten Deltas mischten sich in den nächsten.
+     */
     fun interruptPlayback() {
         player.stop()
         tts.stop()
-        if (_state.value.speaking) {
-            send(buildJsonObject { put("type", "interrupt") })
+        if (_state.value.speaking || turnActive) {
+            // Tor VOR dem Senden schließen: sonst rutschen Frames durch, die
+            // im selben Moment eintreffen. Der alte Turn ist für die App damit
+            // vorbei; eine neue Anfrage setzt turnActive wieder.
+            turnGate.onInterruptSent()
+            turnActive = false
+            val sent = webSocket?.send(buildJsonObject { put("type", "interrupt") }.toString()) ?: false
+            if (!sent) turnGate.reset()
         }
         _state.value = _state.value.copy(speaking = false)
     }
@@ -348,7 +368,10 @@ class AssistantSession(
 
     private fun dispatchMessage(text: String) {
         val obj = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return
-        when (obj["type"]?.jsonPrimitive?.content) {
+        val type = obj["type"]?.jsonPrimitive?.content
+        // Rest eines per interrupt abgebrochenen Turns (Streaming): nicht abspielen, nicht anzeigen.
+        if (!turnGate.accept(type)) return
+        when (type) {
             "transcript" -> {
                 val t = obj["text"]?.jsonPrimitive?.content.orEmpty()
                 val final = obj["final"]?.jsonPrimitive?.boolean ?: false
@@ -420,8 +443,15 @@ class AssistantSession(
                 }
             }
             "done" -> {
+                val interrupted = turnGate.onDone()
+                val wasActive = turnActive
+                // Das done eines abgebrochenen Turns beendet nicht die Anfrage,
+                // die der Nutzer danach schon gestellt hat.
+                if (!interrupted) turnActive = false
                 _state.value = _state.value.copy(speaking = false)
-                maybeTtsFallback()
+                finishAssistantMessage()
+                // Nach einem Barge-in nichts nachträglich vorlesen.
+                if (!interrupted && wasActive) maybeTtsFallback()
             }
             "error" -> fail(obj["message"]?.jsonPrimitive?.content ?: "Unbekannter Server-Fehler")
         }
@@ -461,6 +491,7 @@ class AssistantSession(
         utteranceActive = false
         userAudioThisTurn = true
         serverAudioThisTurn = false
+        turnActive = true
         send(buildJsonObject { put("type", "audio_end") })
     }
 
@@ -476,6 +507,19 @@ class AssistantSession(
             i += 2
         }
         return if (count == 0) 0.0 else sqrt(sum / count)
+    }
+
+    /**
+     * Turn-Ende ohne final-Text (Barge-in, Fehler): der bis dahin gestreamte
+     * Text bleibt stehen, der nächste Turn bekommt eine eigene Nachricht.
+     */
+    private fun finishAssistantMessage() {
+        val id = currentAssistantMsgId ?: return
+        _state.value = _state.value.copy(
+            messages = _state.value.messages.map { if (it.id == id) it.copy(final = true) else it }
+        )
+        currentAssistantText = StringBuilder()
+        currentAssistantMsgId = null
     }
 
     private fun upsertAssistantMessage(text: String, final: Boolean) {
@@ -533,6 +577,8 @@ class AssistantSession(
 
     private inner class SocketListener : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
+            turnGate.reset()
+            turnActive = false
             _state.value = _state.value.copy(connection = ConnectionState.CONNECTED, error = null)
             sendHello()
         }
@@ -541,11 +587,15 @@ class AssistantSession(
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             this@AssistantSession.webSocket = null
+            turnGate.reset()
+            turnActive = false
             fail("Verbindung fehlgeschlagen: ${t.message}")
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             this@AssistantSession.webSocket = null
+            turnGate.reset()
+            turnActive = false
             _state.value = _state.value.copy(connection = ConnectionState.DISCONNECTED)
         }
     }
