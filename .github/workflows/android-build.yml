@@ -27,6 +27,11 @@ jobs:
 
       - name: Android SDK einrichten
         uses: android-actions/setup-android@v3
+        with:
+          # Default waere "tools platform-tools" - das Paket "tools" gibt es in
+          # der aktuellen SDK-Paketliste nicht mehr (sdkmanager bricht ab).
+          # Plattform und Build-Tools laedt Gradle bei Bedarf selbst.
+          packages: platform-tools
 
       # openWakeWord-Modelle (ONNX) in die App-Assets laden. Bewusst NICHT im Git
       # (Binärdateien) — der Runner hat Internet und zieht sie beim Build.
