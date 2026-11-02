@@ -52,6 +52,7 @@ import de.heimai.app.core.network.ConnectionState
 import de.heimai.app.core.settings.AppSettings
 import de.heimai.app.features.chat.ChatViewModel
 import de.heimai.app.ui.components.MessageItem
+import de.heimai.app.ui.components.SessionVisibility
 import de.heimai.app.ui.components.ToolConfirmationDialog
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -121,6 +122,7 @@ fun TalkScreen(onBack: () -> Unit) {
         viewModel.session.updateVad(settings.talkThreshold, settings.talkHalfDuplex)
     }
 
+    SessionVisibility(container.sessions, viewModel.sessionKey)
     ToolConfirmationDialog()
 
     Scaffold(
@@ -146,6 +148,8 @@ fun TalkScreen(onBack: () -> Unit) {
             ) {
                 items(state.messages, key = { it.id }) { msg -> MessageItem(msg, container) }
             }
+            // Hintergrund-Agenten (v1.29): Das Gespräch geht weiter, das Ergebnis kommt später.
+            BackgroundAgentHint(state.backgroundAgents, state.agentResultPending)
             Spacer(Modifier.height(12.dp))
             Text(
                 when {
@@ -280,4 +284,21 @@ private fun MicLevelMeter(level: Float, threshold: Float, active: Boolean) {
         val x = w * thr
         drawLine(color = marker, start = Offset(x, 0f), end = Offset(x, h), strokeWidth = 4f)
     }
+}
+
+/** Hinweis, solange Hintergrund-Agenten arbeiten bzw. ihr Ergebnis noch nicht gemeldet ist. */
+@Composable
+private fun BackgroundAgentHint(running: Int, resultPending: Boolean) {
+    val text = when {
+        running == 1 -> "🤖 Ein Agent arbeitet im Hintergrund …"
+        running > 1 -> "🤖 $running Agenten arbeiten im Hintergrund …"
+        resultPending -> "🤖 Ergebnis liegt bereit — kommt gleich"
+        else -> return
+    }
+    Text(
+        text,
+        Modifier.padding(top = 8.dp),
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }

@@ -54,7 +54,10 @@ Android und Windows sehen dieselbe Historie. Die App speichert Verläufe nicht
 mehr lokal; jeder Turn wird serverseitig im Stream-Router persistiert.
 
 - `GET /v1/conversations` → `{ "conversations": [ { "id", "title", "device_name", "message_count", "created_at", "updated_at" } ] }`
-- `GET /v1/conversations/{id}` → zusätzlich `"messages": [ { "id", "role", "content", "cards": [CardEnvelope…], "has_image", "created_at" } ]`
+- `GET /v1/conversations/{id}` → zusätzlich `"messages": [ { "id", "role", "content", "cards": [CardEnvelope…], "tools": [ { "tool", "status", "job_id?" } ], "has_image", "created_at" } ]`
+  - `tools`: Chips der Tool-/Agenten-Aktivität dieser Antwort; die App zeigt sie als Chip-Zeile vor der Antwort. Hintergrund-Agenten (v1.29) tragen `job_id`; der Server stempelt `background` nach, sobald der Agent fertig ist (`done`/`error`, `error` auch bei Verbindungsabbruch).
+  - `agent_results` (v1.29): Server-Kontext, wird von der App ignoriert.
+  - Eine proaktive Meldung (v1.29) steht als Assistant-Message **ohne** User-Message davor.
 - `DELETE /v1/conversations/{id}` → `{ "ok": true }`
 
 Sichtbarkeit: strikt nur eigene Gespräche (Username aus dem Token); fremde
@@ -114,7 +117,7 @@ typisch 24000 bei XTTS-v2).
 | `text_input` | `text` | Texteingabe statt Sprache |
 | `audio_chunk` | `data` (b64 PCM16/16k) | ~100-ms-Mikrofon-Chunk |
 | `audio_end` | – | Äußerung beendet. Push-to-Talk: beim Loslassen. **Realtime Talk:** die App erkennt Sprechpausen client-seitig (VAD) und sendet `audio_end` automatisch nach einer einstellbaren Stille (Default 900 ms); danach bleibt der Socket offen für die nächste Äußerung |
-| `interrupt` | – | Barge-in: laufende Antwort abbrechen (im Realtime Talk automatisch, wenn der Nutzer während der Antwort spricht — auch solange die Antwort noch entsteht und noch kein Audio kam). Der Server beantwortet **jedes** `interrupt` mit `done`. **Seit Orchestrator v1.26.1:** Mit LLM-Streaming kommen Text und Audio laufend; was zwischen `interrupt` und diesem `done` eintrifft (`assistant_text`, `audio_chunk`, `audio_end`, `card`, `tool_call`, `tool_activity`), gehört zum abgebrochenen Turn und wird verworfen (`TurnFrameGate`). Nach einem Abbruch kein TTS-Fallback |
+| `interrupt` | – | Barge-in: laufende Antwort abbrechen (im Realtime Talk automatisch, wenn der Nutzer während der Antwort spricht — auch solange die Antwort noch entsteht und noch kein Audio kam). Der Server beantwortet **jedes** `interrupt` mit `done`. **Seit Orchestrator v1.26.1:** Mit LLM-Streaming kommen Text und Audio laufend; was zwischen `interrupt` und diesem `done` eintrifft (`assistant_text`, `audio_chunk`, `audio_end`, `card`, `tool_call`, `tool_activity`), gehört zum abgebrochenen Turn und wird verworfen (`TurnFrameGate`). **Ausnahme (v1.29):** `tool_activity` mit `job_id` (Hintergrund-Agent) wird nie verworfen. Nach einem Abbruch kein TTS-Fallback. Auch eine proaktive Meldung (siehe `proactive`) bricht die App per `interrupt` ab, ebenso einen laufenden Turn vor einem neuen `text_input` |
 | `tool_result` | `call_id`, `ok` (bool), `result` (JSON) | Ergebnis eines Geräte-Tool-Aufrufs |
 
 ### 2.2 Server → Client
@@ -128,10 +131,23 @@ typisch 24000 bei XTTS-v2).
 | `audio_chunk` | `data` (b64 PCM16), `sample_rate` | TTS-Audio-Stream (Filler über Piper zuerst, dann XTTS — für die App transparent) |
 | `audio_end` | – | TTS-Stream zu Ende |
 | `card` | `card{type,version,title?,data}` | Karten-Push parallel zur Sprachantwort. **ADDITIV (v1.12):** `type:"html"` → `data.html` ist ein fertiges HTML-Fragment (in isolierter WebView gerendert), optional `data.height` (px, auf 800 gekappt); übrige `data`-Keys sind Rohdaten. Unbekannte Typen → weiterhin `generic`-Fallback |
-| `tool_activity` | `tool`, `status` (running\|done\|error) | **ADDITIV (v1.12), rein informativ:** Tool-/Agent-Aktivität als Chip-Zeile über der Antwort (running legt Chip an, done/error stempelt ihn; mehrere Frames eines Turns in EINER Zeile). Präfix `agent-` → 🤖 „Agent: …". Kein Effekt auf den Turn-Ablauf |
+| `tool_activity` | `tool`, `status` (running\|background\|done\|error), `job_id?` | **ADDITIV (v1.12), rein informativ:** Tool-/Agent-Aktivität als Chip-Zeile über der Antwort (running legt Chip an, done/error stempelt ihn; mehrere Frames eines Turns in EINER Zeile). Präfix `agent-` → 🤖 „Agent: …". Kein Effekt auf den Turn-Ablauf. **Hintergrund-Agenten (v1.29):** `background` + `job_id` kommt im startenden Turn (Chip pulsiert „· arbeitet im Hintergrund …"); `done`/`error` mit derselben `job_id` kommt, sobald der Agent fertig ist — oft zwischen zwei Turns, manchmal mitten in einem anderen Turn oder nach einem `interrupt`. Dieses End-Frame gehört zu **keinem** Turn: Es stempelt den Chip mit dieser `job_id`, egal in welcher Zeile er steht (kein Treffer → ignorieren), und wird vom `TurnFrameGate` nie verworfen. Höchstens 3 Hintergrund-Agenten pro Verbindung; darüber und für `code-card` laufen Agenten wie bisher im Turn (`running` → `done`, ohne `job_id`) |
+| `proactive` | `reason` (`agent_result`) | **ADDITIV (v1.29):** Kündigt einen Turn an, den der Nutzer nicht angefragt hat (Hintergrund-Agent fertig, Nutzer sagt eine Weile nichts — Admin-Panel „Von selbst melden nach", Default 20 s, 0 = nie). Danach ein normaler Turn: `assistant_text`, ggf. `card`/`tool_activity`, `audio_chunk`s + `audio_end` (nur wenn die letzte Nutzereingabe gesprochen war), `done`. Die App behandelt ihn als laufenden Turn (eigene Sprechblase, Barge-in per `interrupt`, kein TTS-Fallback). Steht nicht in den Turn-Frames des Gates. Kommt eine Eingabe (`text_input`, `audio_chunk`, `audio_end`, `image_input`) ohne vorheriges `interrupt`, bricht der Server die Meldung ab und schickt **sofort ein `done`** vor der Antwort; das Ergebnis fließt in diese Antwort ein |
 | `tool_call` | `call_id`, `name`, `arguments` (JSON) | LLM will ein Geräte-Tool ausführen |
 | `done` | – | Turn abgeschlossen. **TTS-Fallback-Regel:** Die App liest den Antworttext nur dann per On-Device-TTS vor, wenn die Anfrage per **Audio** (Mikrofon) kam UND der Server in diesem Turn **kein** `audio_chunk` geliefert hat. Bei Texteingaben wird nie vorgelesen (der Server antwortet dort bewusst ohne Audio) |
 | `error` | `message` | Fehler |
+
+**Lebensdauer der Hintergrund-Agenten (v1.29):** Agenten leben so lange wie
+die WebSocket-Verbindung — schließt sie, bricht der Server sie ab, und das
+Ergebnis ist verloren. Die App hält ihre Sitzungen deshalb im `SessionHub`
+statt pro Bildschirm: Wird Chat, Talk oder das Assist-Overlay geschlossen,
+während ein Agent arbeitet, bleibt die Verbindung offen (Foreground-Service
+`AgentSessionService` mit „Abbrechen"-Knopf), bis das Ergebnis zugestellt
+ist, und danach noch 60 s für eine Rückfrage im selben Gespräch. Meldet sich
+die Assistenz von selbst, während kein Bildschirm dieser Sitzung sichtbar
+ist, öffnet die App das Assist-Overlay auf ihr (ohne „Über anderen Apps
+anzeigen": Benachrichtigung zum Antippen). Ein erneutes Öffnen desselben
+Chats bzw. ein neues Wake Word übernimmt die noch offene Sitzung.
 
 ### 2.3 Geräte-Tool-Bridge
 

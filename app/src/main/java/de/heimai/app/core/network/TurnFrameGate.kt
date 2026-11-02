@@ -9,6 +9,12 @@ package de.heimai.app.core.network
  * Der Server beantwortet JEDES `interrupt` mit einem `done`; bis dahin werden
  * alle Turn-Frames verworfen. Frames des nächsten Turns (z. B. `transcript`)
  * kommen erst danach, die Reihenfolge garantiert der Server.
+ *
+ * Ausnahme (v1.29): `tool_activity` mit `job_id` gehört zu einem
+ * Hintergrund-Agenten, der Barge-in und neue Eingaben überlebt. Sein Ende
+ * gehört zu keinem Turn, und auch sein Start darf nicht verloren gehen, wenn
+ * der startende Turn gerade abgebrochen wird — der Agent läuft trotzdem.
+ * `proactive` eröffnet einen Turn und steht deshalb nicht in [TURN_FRAMES].
  */
 class TurnFrameGate {
     @Volatile
@@ -20,8 +26,12 @@ class TurnFrameGate {
         discarding = true
     }
 
-    /** false = Frame gehört zum abgebrochenen Turn und wird verworfen. */
-    fun accept(type: String?): Boolean = !(discarding && type in TURN_FRAMES)
+    /**
+     * false = Frame gehört zum abgebrochenen Turn und wird verworfen.
+     * @param backgroundJob true für `tool_activity` mit `job_id` (Hintergrund-Agent).
+     */
+    fun accept(type: String?, backgroundJob: Boolean = false): Boolean =
+        backgroundJob || !(discarding && type in TURN_FRAMES)
 
     /** Beim `done`: true, wenn es das done eines abgebrochenen Turns war. */
     fun onDone(): Boolean {
@@ -35,7 +45,7 @@ class TurnFrameGate {
         discarding = false
     }
 
-    private companion object {
+    internal companion object {
         val TURN_FRAMES = setOf(
             "assistant_text", "audio_chunk", "audio_end", "card", "tool_call", "tool_activity",
         )

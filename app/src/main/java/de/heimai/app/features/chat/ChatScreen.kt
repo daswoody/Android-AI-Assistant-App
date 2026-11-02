@@ -42,11 +42,12 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import de.heimai.app.HeimAiApp
 import de.heimai.app.core.network.ConnectionState
 import de.heimai.app.ui.components.MessageItem
+import de.heimai.app.ui.components.SessionVisibility
 import de.heimai.app.ui.components.ToolConfirmationDialog
 
 /**
  * Text-Chat mit dem Orchestrator. Lädt bei bestehender Konversation den
- * Verlauf aus Room und setzt das Gespräch über dieselbe WebSocket-Session
+ * Verlauf vom Server und setzt das Gespräch über dieselbe WebSocket-Session
  * fort. Mikrofon-Button = Push-to-Talk (Mikrophase 2.2).
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -59,7 +60,6 @@ fun ChatScreen(conversationId: String?, onBack: () -> Unit) {
     )
     val container = HeimAiApp.from(context.applicationContext as Application).container
     val state by viewModel.session.state.collectAsState()
-    val history by viewModel.history.collectAsState()
     var input by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
 
@@ -73,11 +73,13 @@ fun ChatScreen(conversationId: String?, onBack: () -> Unit) {
         if (granted) viewModel.session.startListening()
     }
 
-    val totalCount = history.size + state.messages.size
+    // Verlauf (zentrale Historie) und neue Nachrichten stehen beide in der Sitzung.
+    val totalCount = state.messages.size
     LaunchedEffect(totalCount) {
         if (totalCount > 0) listState.animateScrollToItem(totalCount - 1)
     }
 
+    SessionVisibility(container.sessions, viewModel.sessionKey)
     ToolConfirmationDialog()
 
     Scaffold(
@@ -112,8 +114,7 @@ fun ChatScreen(conversationId: String?, onBack: () -> Unit) {
                 state = listState,
                 modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
             ) {
-                items(history, key = { "h${it.id}" }) { msg -> MessageItem(msg, container) }
-                items(state.messages, key = { "s${it.id}" }) { msg -> MessageItem(msg, container) }
+                items(state.messages, key = { it.id }) { msg -> MessageItem(msg, container) }
             }
             if (state.listening) {
                 Text(

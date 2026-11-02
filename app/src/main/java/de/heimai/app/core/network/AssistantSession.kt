@@ -16,11 +16,13 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -32,30 +34,6 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.sqrt
-
-enum class ConnectionState { DISCONNECTED, CONNECTING, CONNECTED, ERROR }
-
-/** Tool-/Agent-Aktivität eines Turns (informativ, v1.12). status: running | done | error */
-data class ToolActivity(val tool: String, val status: String)
-
-data class UiMessage(
-    val id: Long,
-    /** user | assistant | card | info | tool_activity */
-    val role: String,
-    val text: String = "",
-    val card: CardEnvelope? = null,
-    val activities: List<ToolActivity> = emptyList(),
-    val final: Boolean = true,
-)
-
-data class SessionState(
-    val connection: ConnectionState = ConnectionState.DISCONNECTED,
-    val listening: Boolean = false,
-    val speaking: Boolean = false,
-    val partialTranscript: String = "",
-    val messages: List<UiMessage> = emptyList(),
-    val error: String? = null,
-)
 
 /**
  * Eine Assistenz-Sitzung gegen den Voice-Orchestrator:
@@ -86,6 +64,8 @@ class AssistantSession(
         fun onCard(card: CardEnvelope) {}
         /** Server hat dieser Sitzung eine Konversation zugeordnet (zentrale Historie). */
         fun onConversation(id: String) {}
+        /** Die Assistenz meldet sich von selbst (v1.29, Hintergrund-Agent fertig). Läuft auf dem Socket-Thread. */
+        fun onProactive() {}
     }
 
     /** Vom Server vergebene/fortgesetzte Konversations-Id (zentrale Historie). */
@@ -112,8 +92,17 @@ class AssistantSession(
     @Volatile private var userAudioThisTurn = false
     /** true, solange eine Sprech-Äußerung läuft (für sauberes audio_end) */
     @Volatile private var utteranceActive = false
-    /** true zwischen Anfrage (text_input/audio_end) und done — auch wenn noch kein Audio kam */
+    /**
+     * true zwischen Anfrage (text_input/audio_end) bzw. proaktiver Meldung und
+     * done — auch wenn noch kein Audio kam. Gespiegelt in [SessionState.turnActive].
+     */
     @Volatile private var turnActive = false
+        set(value) {
+            field = value
+            _state.update { s -> if (s.turnActive == value) s else s.copy(turnActive = value) }
+        }
+    /** Hintergrund-Agenten dieser Verbindung (v1.29) */
+    private val agents = AgentTracker()
     /** Verwirft nach einem interrupt die Frames des abgebrochenen Turns bis zu dessen done */
     private val turnGate = TurnFrameGate()
     /** Zeitpunkt des letzten abgespielten Server-Audio-Chunks (Echo-Ausklang-Schutz) */
@@ -130,7 +119,7 @@ class AssistantSession(
 
     fun connect() {
         if (webSocket != null) return
-        _state.value = _state.value.copy(connection = ConnectionState.CONNECTING, error = null)
+        _state.update { s -> s.copy(connection = ConnectionState.CONNECTING, error = null) }
         scope.launch {
             val s = settings.current()
             if (s.serverUrl.isBlank()) {
@@ -153,11 +142,26 @@ class AssistantSession(
         player.release()
         webSocket?.close(1000, "bye")
         webSocket = null
-        _state.value = _state.value.copy(connection = ConnectionState.DISCONNECTED, listening = false)
+        onConnectionLost()
+        _state.update { s -> s.copy(connection = ConnectionState.DISCONNECTED, listening = false) }
+    }
+
+    /**
+     * Verlauf aus der zentralen Historie VOR die Nachrichten dieser Verbindung
+     * setzen (negative Ids, kollidieren nicht mit [nextId]).
+     */
+    fun prependHistory(history: List<UiMessage>) {
+        if (history.isEmpty()) return
+        _state.update { s -> s.copy(messages = history + s.messages) }
     }
 
     fun sendText(text: String) {
         if (text.isBlank()) return
+        // Läuft noch eine Antwort (auch eine proaktive Meldung), sauber per
+        // interrupt beenden: Das Tor fängt dann deren done ab, und turnActive
+        // bleibt für diesen neuen Turn gesetzt (Barge-in im Talk funktioniert).
+        if (turnActive) interruptPlayback()
+        agents.onTurnStart()
         addMessage(UiMessage(nextId.getAndIncrement(), "user", text))
         listener?.onUserText(text)
         currentToolActivityMsgId = null // neuer Turn → neue Chip-Zeile
@@ -182,6 +186,9 @@ class AssistantSession(
      *                     (kein Barge-in, dafür garantiert kein Selbst-Mithören).
      * @param aec          true = Kommunikations-Audiomodus + Voice-Call-Aufnahme/-Wiedergabe,
      *                     damit die geräteeigene Echo-Unterdrückung greift (Full-Duplex).
+     * @param interruptCurrent false = eine laufende Antwort NICHT abbrechen (z. B. das
+     *                     Overlay öffnet sich für eine proaktive Meldung, die gerade spricht).
+     *                     Barge-in per VAD funktioniert trotzdem.
      */
     fun startListening(
         continuous: Boolean = false,
@@ -189,6 +196,7 @@ class AssistantSession(
         thresholdRms: Int = 400,
         halfDuplex: Boolean = false,
         aec: Boolean = false,
+        interruptCurrent: Boolean = true,
     ) {
         if (micJob != null) return
         vadThreshold = thresholdRms.toDouble()
@@ -201,8 +209,8 @@ class AssistantSession(
             commActive = true
         }
         player.communication = useAec
-        interruptPlayback()
-        _state.value = _state.value.copy(listening = true, partialTranscript = "")
+        if (interruptCurrent) interruptPlayback()
+        _state.update { s -> s.copy(listening = true, partialTranscript = "") }
         // Turn-Flags werden bewusst NICHT hier gesetzt, sondern erst beim
         // tatsächlichen Senden (sendAudioChunk/sendAudioEnd) — sonst würde ein
         // Barge-in die Buchhaltung des noch offenen vorigen Turns überschreiben.
@@ -312,7 +320,7 @@ class AssistantSession(
             player.communication = false
             commActive = false
         }
-        _state.value = _state.value.copy(listening = false)
+        _state.update { s -> s.copy(listening = false) }
     }
 
     /**
@@ -332,7 +340,7 @@ class AssistantSession(
             val sent = webSocket?.send(buildJsonObject { put("type", "interrupt") }.toString()) ?: false
             if (!sent) turnGate.reset()
         }
-        _state.value = _state.value.copy(speaking = false)
+        _state.update { s -> s.copy(speaking = false) }
     }
 
     // ---- intern ----
@@ -369,21 +377,34 @@ class AssistantSession(
     private fun dispatchMessage(text: String) {
         val obj = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return
         val type = obj["type"]?.jsonPrimitive?.content
+        // Hintergrund-Agent (v1.29): überlebt Barge-in, seine Frames nie verwerfen.
+        val backgroundJob = type == "tool_activity" && obj["job_id"]?.jsonPrimitive?.contentOrNull != null
         // Rest eines per interrupt abgebrochenen Turns (Streaming): nicht abspielen, nicht anzeigen.
-        if (!turnGate.accept(type)) return
+        if (!turnGate.accept(type, backgroundJob)) return
         when (type) {
+            "proactive" -> {
+                // Die Assistenz meldet sich von selbst (Hintergrund-Agent fertig):
+                // ein Turn wie jeder andere — Barge-in muss ihn abbrechen können.
+                finishAssistantMessage()          // evtl. offene Nachricht abschließen
+                currentToolActivityMsgId = null   // eigene Chip-Zeile
+                userAudioThisTurn = false         // kein TTS-Fallback
+                serverAudioThisTurn = false
+                agents.onTurnStart()
+                turnActive = true
+                listener?.onProactive()
+            }
             "transcript" -> {
                 val t = obj["text"]?.jsonPrimitive?.content.orEmpty()
                 val final = obj["final"]?.jsonPrimitive?.boolean ?: false
                 if (final) {
-                    _state.value = _state.value.copy(partialTranscript = "")
+                    _state.update { s -> s.copy(partialTranscript = "") }
                     if (t.isNotBlank()) {
                         addMessage(UiMessage(nextId.getAndIncrement(), "user", t))
                         listener?.onUserText(t)
                         currentToolActivityMsgId = null // neuer Turn → neue Chip-Zeile
                     }
                 } else {
-                    _state.value = _state.value.copy(partialTranscript = t)
+                    _state.update { s -> s.copy(partialTranscript = t) }
                 }
             }
             "assistant_text" -> {
@@ -392,6 +413,8 @@ class AssistantSession(
                 if (final) {
                     val full = if (t.isNotBlank()) t else currentAssistantText.toString()
                     upsertAssistantMessage(full, final = true)
+                    agents.onAssistantFinal()
+                    publishAgents()
                     listener?.onAssistantText(full)
                     currentAssistantText = StringBuilder()
                     currentAssistantMsgId = null
@@ -403,16 +426,26 @@ class AssistantSession(
             "audio_chunk" -> {
                 serverAudioThisTurn = true
                 lastServerAudioAtMs = System.currentTimeMillis()
-                _state.value = _state.value.copy(speaking = true)
+                _state.update { s -> s.copy(speaking = true) }
                 val data = obj["data"]?.jsonPrimitive?.content ?: return
                 val rate = obj["sample_rate"]?.jsonPrimitive?.int ?: 24_000
                 player.play(Base64.decode(data, Base64.NO_WRAP), rate)
             }
-            "audio_end" -> _state.value = _state.value.copy(speaking = false)
+            "audio_end" -> _state.update { s -> s.copy(speaking = false) }
             "tool_activity" -> {
                 val tool = obj["tool"]?.jsonPrimitive?.content ?: return
-                val status = obj["status"]?.jsonPrimitive?.content ?: "running"
-                upsertToolActivity(tool, status)
+                val status = obj["status"]?.jsonPrimitive?.content ?: ToolActivities.RUNNING
+                val jobId = obj["job_id"]?.jsonPrimitive?.contentOrNull
+                if (ToolActivities.isBackgroundEnd(jobId, status)) {
+                    // Ende eines Hintergrund-Agenten: gehört zu keinem Turn.
+                    stampBackgroundJob(jobId!!, status)
+                } else {
+                    upsertToolActivity(tool, status, jobId)
+                    if (jobId != null) {
+                        agents.onJobStarted(jobId)
+                        publishAgents()
+                    }
+                }
             }
             "conversation" -> {
                 val id = obj["conversation_id"]?.jsonPrimitive?.content ?: return
@@ -448,7 +481,7 @@ class AssistantSession(
                 // Das done eines abgebrochenen Turns beendet nicht die Anfrage,
                 // die der Nutzer danach schon gestellt hat.
                 if (!interrupted) turnActive = false
-                _state.value = _state.value.copy(speaking = false)
+                _state.update { s -> s.copy(speaking = false) }
                 finishAssistantMessage()
                 // Nach einem Barge-in nichts nachträglich vorlesen.
                 if (!interrupted && wasActive) maybeTtsFallback()
@@ -491,6 +524,7 @@ class AssistantSession(
         utteranceActive = false
         userAudioThisTurn = true
         serverAudioThisTurn = false
+        agents.onTurnStart()
         turnActive = true
         send(buildJsonObject { put("type", "audio_end") })
     }
@@ -515,9 +549,9 @@ class AssistantSession(
      */
     private fun finishAssistantMessage() {
         val id = currentAssistantMsgId ?: return
-        _state.value = _state.value.copy(
-            messages = _state.value.messages.map { if (it.id == id) it.copy(final = true) else it }
-        )
+        _state.update { s -> s.copy(
+            messages = s.messages.map { if (it.id == id) it.copy(final = true) else it }
+        ) }
         currentAssistantText = StringBuilder()
         currentAssistantMsgId = null
     }
@@ -529,42 +563,64 @@ class AssistantSession(
             currentAssistantMsgId = newId
             addMessage(UiMessage(newId, "assistant", text, final = final))
         } else {
-            _state.value = _state.value.copy(
-                messages = _state.value.messages.map {
+            _state.update { s -> s.copy(
+                messages = s.messages.map {
                     if (it.id == id) it.copy(text = text, final = final) else it
                 }
-            )
+            ) }
         }
     }
 
     /**
-     * Tool-Aktivität als Chip-Zeile des aktuellen Turns: `running` legt einen Chip
-     * an bzw. eröffnet die Zeile, `done`/`error` stempelt den vorhandenen Chip.
-     * Mehrere Tools eines Turns landen in EINER Zeile (eine tool_activity-UiMessage).
+     * Tool-Aktivität als Chip-Zeile des aktuellen Turns: `running`/`background`
+     * legt einen Chip an bzw. eröffnet die Zeile, `done`/`error` stempelt den
+     * vorhandenen Chip. Mehrere Tools eines Turns landen in EINER Zeile (eine
+     * tool_activity-UiMessage). Regeln siehe [ToolActivities.upsert].
      */
-    private fun upsertToolActivity(tool: String, status: String) {
+    private fun upsertToolActivity(tool: String, status: String, jobId: String?) {
         val id = currentToolActivityMsgId
         if (id == null) {
             val newId = nextId.getAndIncrement()
             currentToolActivityMsgId = newId
-            addMessage(UiMessage(newId, "tool_activity", activities = listOf(ToolActivity(tool, status))))
+            addMessage(UiMessage(newId, "tool_activity", activities = listOf(ToolActivity(tool, status, jobId))))
         } else {
-            _state.value = _state.value.copy(
-                messages = _state.value.messages.map { msg ->
-                    if (msg.id != id) return@map msg
-                    val updated = if (msg.activities.any { it.tool == tool }) {
-                        msg.activities.map { if (it.tool == tool) ToolActivity(tool, status) else it }
-                    } else {
-                        msg.activities + ToolActivity(tool, status)
-                    }
-                    msg.copy(activities = updated)
+            _state.update { s -> s.copy(
+                messages = s.messages.map { msg ->
+                    if (msg.id != id) msg
+                    else msg.copy(activities = ToolActivities.upsert(msg.activities, tool, status, jobId))
                 }
-            )
+            ) }
         }
     }
 
+    /** Ende eines Hintergrund-Agenten: Chip mit dieser jobId stempeln, egal in welcher Zeile. */
+    private fun stampBackgroundJob(jobId: String, status: String) {
+        // Kein Treffer (Start nie gesehen): bewusst keine neue Zeile.
+        _state.update { s -> ToolActivities.stampJob(s.messages, jobId, status)?.let { s.copy(messages = it) } ?: s }
+        agents.onJobFinished(jobId)
+        publishAgents()
+    }
+
+    /** Agenten-Buchhaltung in den State spiegeln (Overlay, Talk-Screen, SessionHub lesen sie). */
+    private fun publishAgents() {
+        val running = agents.runningCount
+        val pending = agents.resultPending
+        _state.update { s ->
+            if (s.backgroundAgents == running && s.agentResultPending == pending) s
+            else s.copy(backgroundAgents = running, agentResultPending = pending)
+        }
+    }
+
+    /** Verbindung weg: Der Server bricht laufende Agenten ab, offene Ergebnisse verfallen. */
+    private fun onConnectionLost() {
+        turnGate.reset()
+        turnActive = false
+        agents.reset()
+        publishAgents()
+    }
+
     private fun addMessage(message: UiMessage) {
-        _state.value = _state.value.copy(messages = _state.value.messages + message)
+        _state.update { s -> s.copy(messages = s.messages + message) }
     }
 
     private fun send(payload: JsonObject) {
@@ -572,14 +628,14 @@ class AssistantSession(
     }
 
     private fun fail(message: String) {
-        _state.value = _state.value.copy(connection = ConnectionState.ERROR, error = message)
+        _state.update { s -> s.copy(connection = ConnectionState.ERROR, error = message) }
     }
 
     private inner class SocketListener : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
             turnGate.reset()
             turnActive = false
-            _state.value = _state.value.copy(connection = ConnectionState.CONNECTED, error = null)
+            _state.update { s -> s.copy(connection = ConnectionState.CONNECTED, error = null) }
             sendHello()
         }
 
@@ -587,16 +643,14 @@ class AssistantSession(
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             this@AssistantSession.webSocket = null
-            turnGate.reset()
-            turnActive = false
+            onConnectionLost()
             fail("Verbindung fehlgeschlagen: ${t.message}")
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             this@AssistantSession.webSocket = null
-            turnGate.reset()
-            turnActive = false
-            _state.value = _state.value.copy(connection = ConnectionState.DISCONNECTED)
+            onConnectionLost()
+            _state.update { s -> s.copy(connection = ConnectionState.DISCONNECTED) }
         }
     }
 

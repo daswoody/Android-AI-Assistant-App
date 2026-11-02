@@ -40,17 +40,18 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.lifecycleScope
 import de.heimai.app.HeimAiApp
 import de.heimai.app.MainActivity
 import de.heimai.app.core.network.AssistantSession
 import de.heimai.app.core.network.ConnectionState
+import de.heimai.app.core.session.SessionHub
 import de.heimai.app.ui.components.MessageItem
 import de.heimai.app.ui.components.ToolConfirmationDialog
 import de.heimai.app.ui.theme.HeimAiTheme
@@ -61,15 +62,27 @@ import de.heimai.app.wakeword.WakeWordService
  * (wie das Google-Assistant-Overlay). Unten ein kompaktes Panel mit
  * Transkript, Mikrofon und Texteingabe; Karten erscheinen darüber als
  * schwebende Popup-Karten. Tipp außerhalb schließt das Popup.
+ *
+ * Die Sitzung kommt aus dem [SessionHub]: Schließt das Popup, während ein
+ * Hintergrund-Agent arbeitet, bleibt die Verbindung offen; meldet sich die
+ * Assistenz dann von selbst, öffnet der Hub das Popup mit
+ * [EXTRA_SESSION_KEY] wieder auf genau dieser Sitzung. Ein neues Wake Word
+ * übernimmt eine noch offene Assist-Sitzung (gleiches Gespräch).
  */
 class AssistantOverlayActivity : ComponentActivity() {
 
-    private lateinit var session: AssistantSession
+    private val hub: SessionHub get() = HeimAiApp.from(application).container.sessions
+    /** Aktuelle Sitzung; Compose baut bei einem Wechsel (onNewIntent) neu auf. */
+    private val leaseState = mutableStateOf<SessionHub.Lease?>(null)
+    private val session: AssistantSession get() = leaseState.value!!.session
+    private var visibleNow = false
     private var micGranted = false
 
-    private companion object {
+    companion object {
         /** Inaktivität, nach der sich das Popup selbst schließt (Wake Word übernimmt wieder). */
-        const val IDLE_CLOSE_MS = 8_000L
+        private const val IDLE_CLOSE_MS = 8_000L
+        /** Schlüssel einer Sitzung im [SessionHub], auf der das Popup öffnen soll (proaktive Meldung). */
+        const val EXTRA_SESSION_KEY = "session_key"
     }
 
     private val permissionLauncher =
@@ -83,7 +96,7 @@ class AssistantOverlayActivity : ComponentActivity() {
      * VAD erkennen und automatisch senden (gleiche Einstellungen wie der
      * Talk-Screen) — kein manuelles Stopp/Start pro Äußerung.
      */
-    private fun startRealtimeTalk() {
+    private fun startRealtimeTalk(interruptCurrent: Boolean = true) {
         val s = HeimAiApp.from(application).container.settings.currentBlocking()
         session.startListening(
             continuous = true,
@@ -91,7 +104,23 @@ class AssistantOverlayActivity : ComponentActivity() {
             thresholdRms = s.talkThreshold,
             halfDuplex = s.talkHalfDuplex,
             aec = s.talkAec,
+            interruptCurrent = interruptCurrent,
         )
+    }
+
+    /** Sitzung aus dem Intent (proaktive Meldung) oder Assist-Sitzung aus dem Hub. */
+    private fun acquireFor(intent: Intent?): SessionHub.Lease {
+        val key = intent?.getLongExtra(EXTRA_SESSION_KEY, -1L) ?: -1L
+        return (if (key > 0) hub.acquireByKey(key) else null)
+            ?: hub.acquire(mode = "assist", conversationId = null)
+    }
+
+    /** Popup gibt die Sitzung ab: Mikrofon zu, laufende Antwort beenden — Verbindung bleibt beim Hub. */
+    private fun leaveSession(lease: SessionHub.Lease) {
+        lease.session.stopListening()
+        lease.session.interruptPlayback()
+        if (visibleNow) hub.setVisible(lease.key, false)
+        hub.release(lease.key)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -99,17 +128,7 @@ class AssistantOverlayActivity : ComponentActivity() {
         val container = HeimAiApp.from(application).container
         // Historie ist zentral: Der Orchestrator persistiert jeden Turn selbst,
         // die Assist-Session braucht keinen lokalen Recorder mehr.
-        session = AssistantSession(
-            scope = lifecycleScope,
-            client = container.okHttp,
-            json = container.json,
-            settings = container.settings,
-            toolExecutor = container.toolExecutor,
-            tts = container.tts,
-            audioSession = container.audioSession,
-            mode = "assist",
-        )
-        session.connect()
+        leaseState.value = acquireFor(intent)
 
         micGranted = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         if (!micGranted) permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
@@ -119,24 +138,44 @@ class AssistantOverlayActivity : ComponentActivity() {
                 initial = de.heimai.app.core.settings.AppSettings()
             )
             HeimAiTheme(settings.themeName, settings.darkMode) {
-                OverlayContent()
+                // Sitzungswechsel (onNewIntent): alle Effekte neu starten.
+                key(leaseState.value?.key) { OverlayContent() }
             }
         }
+    }
+
+    /** Popup ist schon offen (singleInstance) und soll auf eine andere Sitzung wechseln. */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        val key = intent.getLongExtra(EXTRA_SESSION_KEY, -1L)
+        val current = leaseState.value ?: return
+        if (key <= 0 || key == current.key) return
+        val next = hub.acquireByKey(key) ?: return
+        leaveSession(current)
+        leaseState.value = next
+        if (visibleNow) hub.setVisible(next.key, true)
     }
 
     override fun onStart() {
         super.onStart()
         WakeWordService.instance?.pauseDetection()
+        leaseState.value?.let { hub.setVisible(it.key, true) }
+        visibleNow = true
     }
 
     override fun onStop() {
         WakeWordService.instance?.resumeDetection()
+        leaseState.value?.let { hub.setVisible(it.key, false) }
+        visibleNow = false
         super.onStop()
         finish()
     }
 
     override fun onDestroy() {
-        session.disconnect()
+        // Nicht trennen: Arbeitet ein Hintergrund-Agent, hält der Hub die
+        // Verbindung offen, bis das Ergebnis da ist (plus kurzer Leerlauf).
+        // leaseState bleibt gesetzt: Compose darf beim Abbau nicht auf null stoßen.
+        leaseState.value?.let { leaveSession(it) }
         super.onDestroy()
     }
 
@@ -149,9 +188,11 @@ class AssistantOverlayActivity : ComponentActivity() {
 
         // Mikrofon automatisch öffnen, sobald verbunden (Wake-Word-Flow):
         // direkt im Realtime-Talk-Modus (VAD, Auto-Send nach Sprechpause).
+        // Eine laufende Antwort (proaktive Meldung, wegen der das Popup aufging)
+        // dabei NICHT abbrechen — Barge-in per Stimme geht trotzdem.
         LaunchedEffect(state.connection) {
             if (state.connection == ConnectionState.CONNECTED && micGranted && !state.listening) {
-                startRealtimeTalk()
+                startRealtimeTalk(interruptCurrent = false)
             }
         }
         LaunchedEffect(state.messages.size) {
@@ -172,6 +213,7 @@ class AssistantOverlayActivity : ComponentActivity() {
                 kotlinx.coroutines.delay(500)
                 val s = session.state.value
                 val busy = s.speaking ||
+                    s.turnActive ||
                     s.partialTranscript.isNotBlank() ||
                     s.connection == ConnectionState.CONNECTING ||
                     session.micLevel.value > overlaySettings.talkThreshold ||
@@ -241,6 +283,7 @@ class AssistantOverlayActivity : ComponentActivity() {
                                         state.listening -> if (state.partialTranscript.isBlank())
                                             "Ich höre zu…" else state.partialTranscript
                                         state.speaking -> "…"
+                                        state.backgroundAgents > 0 -> "Heim-AI · Agent arbeitet …"
                                         else -> "Heim-AI"
                                     },
                                     style = MaterialTheme.typography.labelLarge,

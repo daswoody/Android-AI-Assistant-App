@@ -10,6 +10,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- Hält die Verbindung offen, solange ein Hintergrund-Agent arbeitet (AgentSessionService) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <!-- Overlay: erlaubt dem Wake-Word-Service, das Assistant-Popup direkt zu öffnen -->
@@ -107,6 +109,13 @@
             android:name=".wakeword.WakeWordService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
+
+        <!-- Hintergrund-Agenten (Orchestrator v1.29): Verbindung offen halten, bis das
+             Ergebnis zugestellt ist, auch wenn kein Bildschirm mehr offen ist -->
+        <service
+            android:name=".assistant.AgentSessionService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <!-- Notification-Zugriff (vorbereitet für Zusammenfassungs-Tool) -->
         <service

@@ -49,6 +49,9 @@ jobs:
           done
           ls -la "$dir"
 
+      - name: Unit-Tests
+        run: ./gradlew --no-daemon testDebugUnitTest
+
       - name: Debug-APK bauen
         run: ./gradlew --no-daemon assembleDebug
 

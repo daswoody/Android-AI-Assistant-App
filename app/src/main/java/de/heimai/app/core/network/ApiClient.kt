@@ -52,12 +52,22 @@ data class RemoteConversation(
 @Serializable
 data class ConversationsResponse(val conversations: List<RemoteConversation> = emptyList())
 
+/** Tool-/Agenten-Chip einer Nachricht im Verlauf (job_id nur bei Hintergrund-Agenten, v1.29). */
+@Serializable
+data class RemoteTool(
+    val tool: String,
+    val status: String = "done",
+    val job_id: String? = null,
+)
+
 @Serializable
 data class RemoteMessage(
     val id: Long = 0,
     val role: String,
     val content: String = "",
     val cards: List<CardEnvelope> = emptyList(),
+    val tools: List<RemoteTool> = emptyList(),
+    // agent_results (v1.29) ist Server-Kontext und wird bewusst nicht gelesen.
     val has_image: Boolean = false,
     val created_at: String = "",
 )

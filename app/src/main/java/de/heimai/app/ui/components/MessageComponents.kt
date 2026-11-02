@@ -54,7 +54,8 @@ fun MessageItem(message: UiMessage, container: AppContainer) {
 
 /**
  * Kleine Chip-Zeile über der Antwort: 🔧 + Toolname (bzw. 🤖 „Agent: <name>" bei
- * Präfix „agent-"). running pulsiert, done ✓, error ⚠.
+ * Präfix „agent-"). running pulsiert, background (Hintergrund-Agent, v1.29)
+ * pulsiert mit „· arbeitet im Hintergrund …", done ✓, error ⚠.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -71,9 +72,10 @@ private fun ToolActivityRow(activities: List<ToolActivity>) {
             val suffix = when (a.status) {
                 "done" -> " ✓"
                 "error" -> " ⚠"
+                "background" -> " · arbeitet im Hintergrund …"
                 else -> ""
             }
-            val pulse = if (a.status == "running") {
+            val pulse = if (a.status == "running" || a.status == "background") {
                 val t = rememberInfiniteTransition(label = "pulse")
                 t.animateFloat(
                     initialValue = 0.45f, targetValue = 1f,
