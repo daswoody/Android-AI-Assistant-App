@@ -87,7 +87,6 @@ class SessionHub(private val app: Application, private val container: AppContain
             return Lease(reuse.key, reuse.session, isNew = false)
         }
         val entry = create(mode, conversationId)
-        entry.holders++
         return Lease(entry.key, entry.session, isNew = true)
     }
 
@@ -133,8 +132,14 @@ class SessionHub(private val app: Application, private val container: AppContain
 
     // ---- intern ----
 
+    /** Neue Sitzung, die schon dem anfragenden Bildschirm gehört (holders = 1). */
     private fun create(mode: String, conversationId: String?): Entry {
         val entry = Entry(nextKey++, mode)
+        // Halter VOR der Zustandsbeobachtung setzen: Der Collector läuft auf
+        // Main.immediate synchron los und sähe sonst eine unbenutzte Sitzung im
+        // Anfangszustand DISCONNECTED — und würde sie sofort wieder schließen
+        // (samt Scope, in dem connect() den Verbindungsaufbau startet).
+        entry.holders = 1
         entry.session = AssistantSession(
             scope = entry.scope,
             client = container.okHttp,
@@ -152,10 +157,10 @@ class SessionHub(private val app: Application, private val container: AppContain
             },
         )
         entries += entry
+        entry.session.connect()
         entry.scope.launch {
             entry.session.state.collect { s -> onStateChanged(entry, s) }
         }
-        entry.session.connect()
         Log.i(TAG, "Sitzung ${entry.key} ($mode) neu")
         return entry
     }
